@@ -22,11 +22,14 @@ from bot.database import (
     register_user,
     is_admin,
     ensure_admin,
+    get_connection,
 )
 
 from bot.keyboards import (
     user_keyboard,
     admin_keyboard,
+    back_keyboard,
+    cancel_keyboard,
 )
 
 
@@ -144,6 +147,160 @@ async def admin_command(
 
 
 # ==========================================================
+# إنشاء قائمة
+# ==========================================================
+
+async def create_menu_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        await update.message.reply_text(
+            "❌ ليس لديك صلاحية."
+        )
+
+        return
+
+    context.user_data["state"] = "creating_menu"
+
+    await update.message.reply_text(
+        "📂 إنشاء قائمة جديدة\n\n"
+        "✏️ اكتب اسم القائمة الجديدة:\n\n"
+        "مثال:\n"
+        "الملازم",
+        reply_markup=cancel_keyboard()
+    )
+
+
+# ==========================================================
+# حفظ القائمة الجديدة
+# ==========================================================
+
+async def save_new_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ ليس لديك صلاحية."
+        )
+
+        return
+
+    menu_name = update.message.text.strip()
+
+    if not menu_name:
+
+        await update.message.reply_text(
+            "❌ اسم القائمة لا يمكن أن يكون فارغًا.\n\n"
+            "اكتب اسم القائمة:"
+        )
+
+        return
+
+    connection = get_connection()
+
+    # التحقق من عدم وجود قائمة بنفس الاسم
+    existing = connection.execute(
+        """
+        SELECT id
+        FROM menus
+        WHERE name = ?
+        AND parent_id IS NULL
+        """,
+        (menu_name,)
+    ).fetchone()
+
+    if existing:
+
+        connection.close()
+
+        await update.message.reply_text(
+            "⚠️ توجد قائمة رئيسية بهذا الاسم بالفعل.\n\n"
+            "اكتب اسمًا آخر:"
+        )
+
+        return
+
+    # معرفة ترتيب القائمة الجديدة
+    order_row = connection.execute(
+        """
+        SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+        FROM menus
+        WHERE parent_id IS NULL
+        """
+    ).fetchone()
+
+    next_order = order_row["next_order"]
+
+    # إنشاء القائمة
+    connection.execute(
+        """
+        INSERT INTO menus (
+            name,
+            parent_id,
+            display_order
+        )
+        VALUES (?, NULL, ?)
+        """,
+        (
+            menu_name,
+            next_order
+        )
+    )
+
+    connection.commit()
+    connection.close()
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "✅ تم إنشاء القائمة بنجاح.\n\n"
+        f"📂 اسم القائمة: {menu_name}\n"
+        f"🔢 الترتيب: {next_order}",
+        reply_markup=admin_keyboard()
+    )
+
+
+# ==========================================================
+# إلغاء العملية الحالية
+# ==========================================================
+
+async def cancel_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    context.user_data.clear()
+
+    if is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ تم إلغاء العملية.",
+            reply_markup=admin_keyboard()
+        )
+
+    else:
+
+        await show_public_home(
+            update,
+            context
+        )
+
+
+# ==========================================================
 # استقبال رسائل وأزرار Telegram
 # ==========================================================
 
@@ -162,6 +319,34 @@ async def handle_message(
     register_user(
         update.effective_user
     )
+
+
+    # ------------------------------------------------------
+    # إلغاء
+    # ------------------------------------------------------
+
+    if النص == "❌ إلغاء":
+
+        await cancel_action(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إذا كان المشرف يقوم بإنشاء قائمة
+    # ------------------------------------------------------
+
+    if context.user_data.get("state") == "creating_menu":
+
+        await save_new_menu(
+            update,
+            context
+        )
+
+        return
 
 
     # ------------------------------------------------------
@@ -189,6 +374,76 @@ async def handle_message(
         await show_public_home(
             update,
             context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إنشاء قائمة
+    # ------------------------------------------------------
+
+    if النص == "➕ إنشاء قائمة":
+
+        await create_menu_start(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إدارة القوائم
+    # ------------------------------------------------------
+
+    if النص == "📂 إدارة القوائم":
+
+        if not is_admin(user_id):
+
+            await update.message.reply_text(
+                "❌ ليس لديك صلاحية."
+            )
+
+            return
+
+        connection = get_connection()
+
+        menus = connection.execute(
+            """
+            SELECT id, name, display_order
+            FROM menus
+            WHERE parent_id IS NULL
+            ORDER BY display_order ASC, id ASC
+            """
+        ).fetchall()
+
+        connection.close()
+
+        if not menus:
+
+            await update.message.reply_text(
+                "📂 إدارة القوائم\n\n"
+                "لا توجد قوائم منشأة حتى الآن.\n\n"
+                "استخدم ➕ إنشاء قائمة لإضافة أول قائمة.",
+                reply_markup=admin_keyboard()
+            )
+
+            return
+
+        رسالة = "📂 القوائم الرئيسية:\n\n"
+
+        for menu in menus:
+
+            رسالة += (
+                f"🔹 {menu['name']}\n"
+                f"   ID: {menu['id']}\n"
+                f"   الترتيب: {menu['display_order']}\n\n"
+            )
+
+        await update.message.reply_text(
+            رسالة,
+            reply_markup=admin_keyboard()
         )
 
         return
@@ -245,50 +500,6 @@ async def handle_message(
         await update.message.reply_text(
             "🌿 هدى للناس\n\n"
             "منصة Telegram لتنظيم وعرض المحتوى."
-        )
-
-        return
-
-
-    # ------------------------------------------------------
-    # إنشاء قائمة
-    # ------------------------------------------------------
-
-    if النص == "➕ إنشاء قائمة":
-
-        if not is_admin(user_id):
-
-            await update.message.reply_text(
-                "❌ ليس لديك صلاحية."
-            )
-
-            return
-
-        await update.message.reply_text(
-            "📂 إنشاء قائمة\n\n"
-            "سيتم تفعيل إنشاء القوائم في الخطوة القادمة."
-        )
-
-        return
-
-
-    # ------------------------------------------------------
-    # إدارة القوائم
-    # ------------------------------------------------------
-
-    if النص == "📂 إدارة القوائم":
-
-        if not is_admin(user_id):
-
-            await update.message.reply_text(
-                "❌ ليس لديك صلاحية."
-            )
-
-            return
-
-        await update.message.reply_text(
-            "📂 إدارة القوائم\n\n"
-            "سيتم عرض القوائم هنا."
         )
 
         return
