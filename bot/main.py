@@ -52,17 +52,29 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 
 
 if not BOT_TOKEN:
-
     raise RuntimeError(
         "BOT_TOKEN غير موجود في GitHub Secrets"
     )
 
 
 if not ADMIN_ID:
-
     raise RuntimeError(
         "ADMIN_ID غير موجود في GitHub Secrets"
     )
+
+
+# ==========================================================
+# إزالة أيقونة المجلد من اسم الزر
+# ==========================================================
+
+def extract_menu_name(text):
+
+    prefix = "📂 "
+
+    if text.startswith(prefix):
+        return text[len(prefix):].strip()
+
+    return text.strip()
 
 
 # ==========================================================
@@ -376,21 +388,37 @@ async def save_new_menu(
     # الترتيب
     # ------------------------------------------------------
 
-    order_row = connection.execute(
+    if parent_id is None:
 
-        """
-        SELECT COALESCE(
-            MAX(display_order), 0
-        ) + 1 AS next_order
+        order_row = connection.execute(
 
-        FROM menus
+            """
+            SELECT COALESCE(
+                MAX(display_order), 0
+            ) + 1 AS next_order
 
-        WHERE
-            parent_id IS ?
-        """,
+            FROM menus
 
-        (parent_id,)
-    ).fetchone()
+            WHERE parent_id IS NULL
+            """
+        ).fetchone()
+
+    else:
+
+        order_row = connection.execute(
+
+            """
+            SELECT COALESCE(
+                MAX(display_order), 0
+            ) + 1 AS next_order
+
+            FROM menus
+
+            WHERE parent_id = ?
+            """,
+
+            (parent_id,)
+        ).fetchone()
 
     next_order = order_row["next_order"]
 
@@ -420,7 +448,6 @@ async def save_new_menu(
     new_menu_id = cursor.lastrowid
 
     connection.commit()
-
     connection.close()
 
     # ======================================================
@@ -629,19 +656,17 @@ async def open_menu(
     )
 
     # ------------------------------------------------------
-    # بناء رسالة العرض
+    # عرض القائمة
     # ------------------------------------------------------
-
-    message = (
-        f"📂 {menu['name']}\n\n"
-        f"📁 القوائم الفرعية: {len(children)}\n"
-        f"📦 المحتوى: {len(contents)}\n\n"
-        "اختر العملية المطلوبة:"
-    )
 
     await update.message.reply_text(
 
-        message,
+        f"📂 {menu['name']}\n\n"
+
+        f"📁 القوائم الفرعية: {len(children)}\n"
+        f"📦 المحتوى: {len(contents)}\n\n"
+
+        "اختر العملية المطلوبة:",
 
         reply_markup=menu_management_keyboard(
             children
@@ -709,7 +734,7 @@ def find_menu_by_name(
 
 
 # ==========================================================
-# بدء إضافة المحتوى
+# إضافة محتوى من داخل القائمة الحالية
 # ==========================================================
 
 async def start_add_content(
@@ -792,7 +817,6 @@ async def choose_content_type(
     )
 
     if not content_type:
-
         return
 
     context.user_data["content_type"] = (
@@ -1123,12 +1147,7 @@ async def save_content(
     )
 
     connection.commit()
-
     connection.close()
-
-    # ======================================================
-    # النجاح
-    # ======================================================
 
     await update.message.reply_text(
 
@@ -1139,7 +1158,7 @@ async def save_content(
     )
 
     # ------------------------------------------------------
-    # العودة مباشرة إلى نفس القائمة
+    # العودة إلى نفس القائمة
     # ------------------------------------------------------
 
     await open_menu(
@@ -1233,10 +1252,6 @@ async def open_public_menu(
 
     connection.close()
 
-    # ------------------------------------------------------
-    # حفظ الموقع الحالي للمستخدم
-    # ------------------------------------------------------
-
     context.user_data["public_menu_id"] = (
         menu["id"]
     )
@@ -1304,10 +1319,6 @@ async def send_public_content(
         "content_type"
     ]
 
-    # ------------------------------------------------------
-    # النص
-    # ------------------------------------------------------
-
     if content_type == "text":
 
         await update.message.reply_text(
@@ -1315,10 +1326,6 @@ async def send_public_content(
         )
 
         return
-
-    # ------------------------------------------------------
-    # الملف
-    # ------------------------------------------------------
 
     if content_type == "document":
 
@@ -1329,10 +1336,6 @@ async def send_public_content(
 
         return
 
-    # ------------------------------------------------------
-    # الصورة
-    # ------------------------------------------------------
-
     if content_type == "photo":
 
         await update.message.reply_photo(
@@ -1341,10 +1344,6 @@ async def send_public_content(
         )
 
         return
-
-    # ------------------------------------------------------
-    # الفيديو
-    # ------------------------------------------------------
 
     if content_type == "video":
 
@@ -1355,10 +1354,6 @@ async def send_public_content(
 
         return
 
-    # ------------------------------------------------------
-    # الصوت
-    # ------------------------------------------------------
-
     if content_type == "audio":
 
         await update.message.reply_audio(
@@ -1368,10 +1363,6 @@ async def send_public_content(
 
         return
 
-    # ------------------------------------------------------
-    # الرسالة الصوتية
-    # ------------------------------------------------------
-
     if content_type == "voice":
 
         await update.message.reply_voice(
@@ -1379,10 +1370,6 @@ async def send_public_content(
         )
 
         return
-
-    # ------------------------------------------------------
-    # الرابط
-    # ------------------------------------------------------
 
     if content_type == "url":
 
@@ -1449,10 +1436,6 @@ async def go_back_public(
         "parent_id"
     ]
 
-    # ------------------------------------------------------
-    # القائمة الرئيسية
-    # ------------------------------------------------------
-
     if parent_id is None:
 
         await show_public_home(
@@ -1461,10 +1444,6 @@ async def go_back_public(
         )
 
         return
-
-    # ------------------------------------------------------
-    # العودة إلى الأب
-    # ------------------------------------------------------
 
     await open_public_menu(
         update,
@@ -1527,10 +1506,6 @@ async def go_back_admin(
         "parent_id"
     ]
 
-    # ------------------------------------------------------
-    # إذا كانت القائمة رئيسية
-    # ------------------------------------------------------
-
     if parent_id is None:
 
         await show_menus(
@@ -1539,10 +1514,6 @@ async def go_back_admin(
         )
 
         return
-
-    # ------------------------------------------------------
-    # إذا كانت قائمة فرعية
-    # ------------------------------------------------------
 
     await open_menu(
         update,
@@ -1570,10 +1541,6 @@ async def cancel_action(
         "❌ تم إلغاء العملية."
     )
 
-    # ------------------------------------------------------
-    # إذا كان المشرف داخل قائمة
-    # ------------------------------------------------------
-
     if current_menu_id and is_admin(
         update.effective_user.id
     ):
@@ -1585,10 +1552,6 @@ async def cancel_action(
         )
 
         return
-
-    # ------------------------------------------------------
-    # خلاف ذلك لوحة الإدارة
-    # ------------------------------------------------------
 
     if is_admin(
         update.effective_user.id
@@ -1660,7 +1623,7 @@ async def handle_message(
         return
 
     # ======================================================
-    # الحالات الخاصة بإنشاء القوائم
+    # إنشاء القوائم
     # ======================================================
 
     if state in [
@@ -1720,10 +1683,6 @@ async def handle_message(
 
     if text == "◀️ رجوع":
 
-        # --------------------------------------------------
-        # إذا كان المستخدم في قائمة عامة
-        # --------------------------------------------------
-
         if public_menu_id:
 
             await go_back_public(
@@ -1732,10 +1691,6 @@ async def handle_message(
             )
 
             return
-
-        # --------------------------------------------------
-        # إذا كان المشرف داخل قائمة
-        # --------------------------------------------------
 
         if current_menu_id and is_admin(user_id):
 
@@ -1746,15 +1701,9 @@ async def handle_message(
 
             return
 
-        # --------------------------------------------------
-        # إدارة القوائم
-        # --------------------------------------------------
-
-        if (
-            context.user_data.get(
-                "admin_level"
-            ) == "menus"
-        ):
+        if context.user_data.get(
+            "admin_level"
+        ) == "menus":
 
             await show_admin_panel(
                 update,
@@ -1762,10 +1711,6 @@ async def handle_message(
             )
 
             return
-
-        # --------------------------------------------------
-        # لوحة الإدارة
-        # --------------------------------------------------
 
         if is_admin(user_id):
 
@@ -1775,10 +1720,6 @@ async def handle_message(
             )
 
             return
-
-        # --------------------------------------------------
-        # المستخدم العادي
-        # --------------------------------------------------
 
         await show_public_home(
             update,
@@ -1820,7 +1761,6 @@ async def handle_message(
     if text == "📂 إدارة القوائم":
 
         if not is_admin(user_id):
-
             return
 
         await show_menus(
@@ -1863,7 +1803,6 @@ async def handle_message(
     if text == "➕ إضافة محتوى":
 
         if not is_admin(user_id):
-
             return
 
         await start_add_content(
@@ -1874,22 +1813,20 @@ async def handle_message(
         return
 
     # ======================================================
-    # ======================================================
-    # مهم جدًا:
-    # فتح القوائم العامة يجب أن يكون قبل فتح القوائم
-    # الإدارية، حتى لا تتعارض أزرار 📂
-    # ======================================================
+    # الواجهة العامة داخل قائمة
     # ======================================================
 
     if public_menu_id:
 
         # --------------------------------------------------
-        # قائمة فرعية عامة
+        # قائمة فرعية
         # --------------------------------------------------
 
         if text.startswith("📂 "):
 
-            menu_name = text[3:].strip()
+            menu_name = extract_menu_name(
+                text
+            )
 
             menu = find_menu_by_name(
                 menu_name,
@@ -1906,8 +1843,14 @@ async def handle_message(
 
                 return
 
+            await update.message.reply_text(
+                "❌ لم يتم العثور على القسم."
+            )
+
+            return
+
         # --------------------------------------------------
-        # محتوى عام
+        # المحتوى
         # --------------------------------------------------
 
         connection = get_connection()
@@ -1961,7 +1904,7 @@ async def handle_message(
         return
 
     # ======================================================
-    # القوائم العامة الرئيسية
+    # القوائم الرئيسية العامة
     # ======================================================
 
     if text == "📖 القرآن والثقافة":
@@ -2015,13 +1958,14 @@ async def handle_message(
     if text.startswith("📂 "):
 
         if not is_admin(user_id):
-
             return
 
-        menu_name = text[3:].strip()
+        menu_name = extract_menu_name(
+            text
+        )
 
         # --------------------------------------------------
-        # إذا كان داخل قائمة، ابحث عن القائمة الفرعية
+        # إذا كان داخل قائمة: ابحث عن قائمة فرعية
         # --------------------------------------------------
 
         if current_menu_id:
@@ -2032,7 +1976,7 @@ async def handle_message(
             )
 
         # --------------------------------------------------
-        # إذا كان في إدارة القوائم، ابحث عن الرئيسية
+        # إذا كان في إدارة القوائم: ابحث عن رئيسية
         # --------------------------------------------------
 
         else:
@@ -2058,13 +2002,12 @@ async def handle_message(
         return
 
     # ======================================================
-    # وظائف الإدارة
+    # تعديل القائمة
     # ======================================================
 
     if text == "✏️ تعديل القائمة":
 
         if not is_admin(user_id):
-
             return
 
         await update.message.reply_text(
@@ -2075,10 +2018,13 @@ async def handle_message(
 
         return
 
+    # ======================================================
+    # حذف القائمة
+    # ======================================================
+
     if text == "🗑️ حذف القائمة":
 
         if not is_admin(user_id):
-
             return
 
         await update.message.reply_text(
@@ -2089,10 +2035,13 @@ async def handle_message(
 
         return
 
+    # ======================================================
+    # المشرفون
+    # ======================================================
+
     if text == "👥 المشرفون":
 
         if not is_admin(user_id):
-
             return
 
         await update.message.reply_text(
@@ -2103,10 +2052,13 @@ async def handle_message(
 
         return
 
+    # ======================================================
+    # الإحصائيات
+    # ======================================================
+
     if text == "📊 الإحصائيات":
 
         if not is_admin(user_id):
-
             return
 
         connection = get_connection()
