@@ -8,9 +8,7 @@ def make_keyboard(rows):
         row_buttons = []
 
         for text in row:
-            row_buttons.append(
-                KeyboardButton(text)
-            )
+            row_buttons.append(KeyboardButton(text))
 
         buttons.append(row_buttons)
 
@@ -18,16 +16,11 @@ def make_keyboard(rows):
         buttons,
         resize_keyboard=True,
         one_time_keyboard=False,
-        is_persistent=True,
+        is_persistent=True
     )
 
 
-# ==========================================================
-# الواجهة الرئيسية للمستخدم
-# ==========================================================
-
 def user_keyboard(is_admin_user=False):
-
     rows = [
         ["📖 القرآن والثقافة"],
         ["📚 الملازم"],
@@ -36,88 +29,85 @@ def user_keyboard(is_admin_user=False):
     ]
 
     if is_admin_user:
-        rows.append([
-            "⚙️ الإدارة"
-        ])
+        rows.append(["⚙️ الإدارة"])
 
     return make_keyboard(rows)
 
 
-# ==========================================================
-# القوائم العامة للمستخدم
-# ==========================================================
-
-def public_menu_keyboard(contents=None):
-
+def public_menu_keyboard(
+    children=None,
+    contents=None,
+    media_groups=None
+):
     rows = []
 
-    if contents:
-        for content in contents:
+    children = children or []
+    contents = contents or []
+    media_groups = media_groups or []
 
-            icon = content_type_icon(
-                content["content_type"]
-            )
+    # الفروع
+    for menu in children:
+        rows.append([
+            f"📂 {menu['name']}"
+        ])
 
-            rows.append([
-                f"{icon} {content['title']}"
-            ])
+    # المحتويات الفردية
+    for content in contents:
+        icon = content_type_icon(content["content_type"])
 
-    rows.append([
-        "◀️ رجوع"
-    ])
+        rows.append([
+            f"{icon} {content['title']}"
+        ])
+
+    # مجموعات الوسائط
+    for group in media_groups:
+        icon = media_group_icon(group["media_type"])
+
+        rows.append([
+            f"{icon} {group['title']}"
+        ])
+
+    rows.append(["◀️ رجوع"])
 
     return make_keyboard(rows)
 
 
-# ==========================================================
-# أيقونة نوع المحتوى
-# ==========================================================
-
 def content_type_icon(content_type):
-
     icons = {
         "text": "📝",
         "document": "📄",
         "photo": "🖼️",
         "video": "🎬",
-        "audio": "🎧",
+        "audio": "🎵",
         "voice": "🎤",
         "url": "🔗",
     }
 
-    return icons.get(
-        content_type,
-        "📄"
-    )
+    return icons.get(content_type, "📄")
 
 
-# ==========================================================
-# لوحة الإدارة الرئيسية
-# ==========================================================
+def media_group_icon(media_type):
+    icons = {
+        "photo": "🖼️",
+        "video": "🎬",
+        "audio": "🎵",
+    }
+
+    return icons.get(media_type, "📁")
+
 
 def admin_keyboard():
-
     return make_keyboard([
-
         ["📂 إدارة القوائم"],
-
         ["👥 المشرفون", "📊 الإحصائيات"],
-
         ["👤 واجهة المستخدم"],
-
     ])
 
 
-# ==========================================================
-# إدارة القوائم الرئيسية
-# ==========================================================
-
 def menus_keyboard(menus):
-
     rows = []
 
     for menu in menus:
-
         rows.append([
             f"📂 {menu['name']}"
         ])
@@ -133,28 +123,66 @@ def menus_keyboard(menus):
     return make_keyboard(rows)
 
 
-# ==========================================================
-# داخل القائمة الرئيسية للمشرف
-# ==========================================================
-
-def admin_menu_keyboard(contents=None):
-
+def admin_menu_keyboard(
+    children=None,
+    contents=None,
+    media_groups=None
+):
     rows = []
 
-    if contents:
+    children = children or []
+    contents = contents or []
+    media_groups = media_groups or []
 
-        for content in contents:
+    # الفروع الموجودة
+    for menu in children:
+        rows.append([
+            f"📂 {menu['name']}"
+        ])
 
-            icon = content_type_icon(
-                content["content_type"]
-            )
+    # المحتويات الفردية
+    for content in contents:
+        icon = content_type_icon(content["content_type"])
 
-            rows.append([
-                f"{icon} {content['title']}"
-            ])
+        rows.append([
+            f"{icon} {content['title']}"
+        ])
+
+    # مجموعات الوسائط
+    for group in media_groups:
+        icon = media_group_icon(group["media_type"])
+
+        rows.append([
+            f"{icon} {group['title']}"
+        ])
+
+    # أدوات الإدارة
+    rows.append([
+        "➕ إضافة فرع"
+    ])
 
     rows.append([
-        "➕ إضافة محتوى"
+        "📝 إضافة نص"
+    ])
+
+    rows.append([
+        "🖼️ إضافة صور متعددة"
+    ])
+
+    rows.append([
+        "🎬 إضافة فيديوهات متعددة"
+    ])
+
+    rows.append([
+        "🎵 إضافة أصوات متعددة"
+    ])
+
+    rows.append([
+        "📄 إضافة ملف"
+    ])
+
+    rows.append([
+        "🔗 إضافة رابط"
     ])
 
     rows.append([
@@ -164,33 +192,31 @@ def admin_menu_keyboard(contents=None):
     return make_keyboard(rows)
 
 
-# ==========================================================
-# اختيار نوع المحتوى
-# ==========================================================
-
 def content_type_keyboard():
-
     return make_keyboard([
-
         ["📝 نص"],
-
-        ["📄 ملف / PDF", "🖼️ صورة"],
-
-        ["🎬 فيديو", "🎧 صوت"],
-
-        ["🎤 رسالة صوتية", "🔗 رابط"],
-
+        ["📄 ملف / PDF", "🔗 رابط"],
         ["❌ إلغاء"],
-
     ])
 
 
-# ==========================================================
-# زر الإلغاء
-# ==========================================================
+def media_group_type_keyboard():
+    return make_keyboard([
+        ["🖼️ إضافة صور متعددة"],
+        ["🎬 إضافة فيديوهات متعددة"],
+        ["🎵 إضافة أصوات متعددة"],
+        ["❌ إلغاء"],
+    ])
+
+
+def media_group_finish_keyboard():
+    return make_keyboard([
+        ["✅ إنهاء"],
+        ["❌ إلغاء"],
+    ])
+
 
 def cancel_keyboard():
-
     return make_keyboard([
         ["❌ إلغاء"]
     ])
