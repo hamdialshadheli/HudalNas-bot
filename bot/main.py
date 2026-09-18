@@ -29,7 +29,7 @@ from bot.keyboards import (
     user_keyboard,
     admin_keyboard,
     menus_keyboard,
-    back_keyboard,
+    menu_management_keyboard,
     cancel_keyboard,
 )
 
@@ -56,7 +56,7 @@ if not ADMIN_ID:
 
 
 # ==========================================================
-# الواجهة الرئيسية
+# الواجهة الرئيسية للمستخدم
 # ==========================================================
 
 async def show_public_home(
@@ -64,7 +64,9 @@ async def show_public_home(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    register_user(update.effective_user)
+    register_user(
+        update.effective_user
+    )
 
     admin_status = is_admin(
         update.effective_user.id
@@ -143,7 +145,7 @@ async def admin_command(
 # إنشاء قائمة رئيسية
 # ==========================================================
 
-async def create_menu_start(
+async def create_main_menu_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -158,12 +160,12 @@ async def create_menu_start(
 
         return
 
-    context.user_data["state"] = "creating_menu"
+    context.user_data.clear()
 
-    context.user_data["parent_id"] = None
+    context.user_data["state"] = "creating_main_menu"
 
     await update.message.reply_text(
-        "📂 إنشاء قائمة جديدة\n\n"
+        "📂 إنشاء قائمة رئيسية\n\n"
         "✏️ اكتب اسم القائمة:",
         reply_markup=cancel_keyboard()
     )
@@ -195,17 +197,18 @@ async def create_submenu_start(
     if not parent_id:
 
         await update.message.reply_text(
-            "❌ لم يتم تحديد القائمة الرئيسية."
+            "❌ لم يتم تحديد القائمة الحالية."
         )
 
         return
 
-    context.user_data["state"] = "creating_menu"
+    context.user_data["state"] = "creating_submenu"
 
     context.user_data["parent_id"] = parent_id
 
     await update.message.reply_text(
         "📂 إنشاء قائمة فرعية\n\n"
+        f"📌 داخل: {context.user_data.get('current_menu_name', '')}\n\n"
         "✏️ اكتب اسم القائمة الفرعية:",
         reply_markup=cancel_keyboard()
     )
@@ -243,35 +246,56 @@ async def save_new_menu(
 
         return
 
-    parent_id = context.user_data.get(
-        "parent_id"
+    state = context.user_data.get(
+        "state"
     )
+
+    if state == "creating_main_menu":
+
+        parent_id = None
+
+    elif state == "creating_submenu":
+
+        parent_id = context.user_data.get(
+            "parent_id"
+        )
+
+    else:
+
+        return
 
     connection = get_connection()
 
     # ------------------------------------------------------
-    # التحقق من الاسم داخل نفس المستوى
+    # التحقق من الاسم في نفس المستوى
     # ------------------------------------------------------
 
-    existing = connection.execute(
-        """
-        SELECT id
-        FROM menus
-        WHERE name = ?
-        AND (
-            parent_id = ?
-            OR (
-                parent_id IS NULL
-                AND ? IS NULL
+    if parent_id is None:
+
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM menus
+            WHERE name = ?
+            AND parent_id IS NULL
+            """,
+            (menu_name,)
+        ).fetchone()
+
+    else:
+
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM menus
+            WHERE name = ?
+            AND parent_id = ?
+            """,
+            (
+                menu_name,
+                parent_id
             )
-        )
-        """,
-        (
-            menu_name,
-            parent_id,
-            parent_id
-        )
-    ).fetchone()
+        ).fetchone()
 
     if existing:
 
@@ -288,26 +312,34 @@ async def save_new_menu(
     # تحديد الترتيب
     # ------------------------------------------------------
 
-    order_row = connection.execute(
-        """
-        SELECT COALESCE(MAX(display_order), 0) + 1
-        AS next_order
+    if parent_id is None:
 
-        FROM menus
+        order_row = connection.execute(
+            """
+            SELECT COALESCE(
+                MAX(display_order), 0
+            ) + 1 AS next_order
 
-        WHERE (
-            parent_id = ?
-            OR (
-                parent_id IS NULL
-                AND ? IS NULL
-            )
-        )
-        """,
-        (
-            parent_id,
-            parent_id
-        )
-    ).fetchone()
+            FROM menus
+
+            WHERE parent_id IS NULL
+            """
+        ).fetchone()
+
+    else:
+
+        order_row = connection.execute(
+            """
+            SELECT COALESCE(
+                MAX(display_order), 0
+            ) + 1 AS next_order
+
+            FROM menus
+
+            WHERE parent_id = ?
+            """,
+            (parent_id,)
+        ).fetchone()
 
     next_order = order_row["next_order"]
 
@@ -337,14 +369,46 @@ async def save_new_menu(
     connection.commit()
     connection.close()
 
+    # ------------------------------------------------------
+    # بعد إنشاء القائمة الفرعية
+    # نعيد المشرف إلى القائمة الأب
+    # ------------------------------------------------------
+
+    if state == "creating_submenu":
+
+        current_menu_id = parent_id
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ تم إنشاء القائمة الفرعية بنجاح.\n\n"
+            f"📂 الاسم: {menu_name}\n"
+            f"🆔 ID: {new_menu_id}",
+        )
+
+        await open_menu(
+            update,
+            context,
+            current_menu_id
+        )
+
+        return
+
+    # ------------------------------------------------------
+    # بعد إنشاء القائمة الرئيسية
+    # ------------------------------------------------------
+
     context.user_data.clear()
 
     await update.message.reply_text(
-        "✅ تم إنشاء القائمة بنجاح.\n\n"
+        "✅ تم إنشاء القائمة الرئيسية بنجاح.\n\n"
         f"📂 الاسم: {menu_name}\n"
-        f"🆔 ID: {new_menu_id}\n"
-        f"🔢 الترتيب: {next_order}",
-        reply_markup=admin_keyboard()
+        f"🆔 ID: {new_menu_id}",
+    )
+
+    await show_menus(
+        update,
+        context
     )
 
 
@@ -372,27 +436,25 @@ async def show_menus(
     menus = connection.execute(
         """
         SELECT id, name, display_order
+
         FROM menus
+
         WHERE parent_id IS NULL
-        ORDER BY display_order ASC, id ASC
+
+        ORDER BY
+            display_order ASC,
+            id ASC
         """
     ).fetchall()
 
     connection.close()
 
-    if not menus:
-
-        await update.message.reply_text(
-            "📂 إدارة القوائم\n\n"
-            "لا توجد قوائم حتى الآن.",
-            reply_markup=admin_keyboard()
-        )
-
-        return
-
     await update.message.reply_text(
-        "📂 اختر القائمة التي تريد إدارتها:",
-        reply_markup=menus_keyboard(menus)
+        "📂 إدارة القوائم\n\n"
+        "اختر قائمة لإدارتها:",
+        reply_markup=menus_keyboard(
+            menus
+        )
     )
 
 
@@ -410,8 +472,13 @@ async def open_menu(
 
     menu = connection.execute(
         """
-        SELECT id, name, parent_id
+        SELECT
+            id,
+            name,
+            parent_id
+
         FROM menus
+
         WHERE id = ?
         """,
         (menu_id,)
@@ -429,10 +496,18 @@ async def open_menu(
 
     children = connection.execute(
         """
-        SELECT id, name, display_order
+        SELECT
+            id,
+            name,
+            display_order
+
         FROM menus
+
         WHERE parent_id = ?
-        ORDER BY display_order ASC, id ASC
+
+        ORDER BY
+            display_order ASC,
+            id ASC
         """,
         (menu_id,)
     ).fetchall()
@@ -445,50 +520,17 @@ async def open_menu(
 
     context.user_data["current_parent_id"] = menu["parent_id"]
 
-    الصفوف = []
-
-    for child in children:
-
-        الصفوف.append([
-            f"📂 {child['name']}"
-        ])
-
-    الصفوف.append([
-        "➕ إنشاء قائمة فرعية"
-    ])
-
-    الصفوف.append([
-        "◀️ رجوع"
-    ])
-
-    from bot.keyboards import make_keyboard
-
     await update.message.reply_text(
-        f"📂 القائمة: {menu['name']}\n\n"
+        f"📂 {menu['name']}\n\n"
         "اختر أحد العناصر:",
-        reply_markup=make_keyboard(الصفوف)
+        reply_markup=menu_management_keyboard(
+            children
+        )
     )
 
 
 # ==========================================================
-# إلغاء العملية
-# ==========================================================
-
-async def cancel_action(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "❌ تم إلغاء العملية.",
-        reply_markup=admin_keyboard()
-    )
-
-
-# ==========================================================
-# رجوع
+# الرجوع
 # ==========================================================
 
 async def go_back(
@@ -502,34 +544,36 @@ async def go_back(
 
     if current_parent_id:
 
-        connection = get_connection()
+        await open_menu(
+            update,
+            context,
+            current_parent_id
+        )
 
-        parent = connection.execute(
-            """
-            SELECT id, name, parent_id
-            FROM menus
-            WHERE id = ?
-            """,
-            (current_parent_id,)
-        ).fetchone()
-
-        connection.close()
-
-        if parent:
-
-            await open_menu(
-                update,
-                context,
-                parent["id"]
-            )
-
-            return
+        return
 
     context.user_data.clear()
 
     await show_menus(
         update,
         context
+    )
+
+
+# ==========================================================
+# إلغاء
+# ==========================================================
+
+async def cancel_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ تم إلغاء العملية.",
+        reply_markup=admin_keyboard()
     )
 
 
@@ -569,54 +613,15 @@ async def handle_message(
 
 
     # ------------------------------------------------------
-    # رجوع
-    # ------------------------------------------------------
-
-    if النص == "◀️ رجوع":
-
-        await go_back(
-            update,
-            context
-        )
-
-        return
-
-
-    # ------------------------------------------------------
-    # إنشاء قائمة فرعية
-    # ------------------------------------------------------
-
-    if النص == "➕ إنشاء قائمة فرعية":
-
-        await create_submenu_start(
-            update,
-            context
-        )
-
-        return
-
-
-    # ------------------------------------------------------
-    # إنشاء قائمة رئيسية
-    # ------------------------------------------------------
-
-    if النص == "➕ إنشاء قائمة":
-
-        await create_menu_start(
-            update,
-            context
-        )
-
-        return
-
-
-    # ------------------------------------------------------
     # إذا كنا في وضع إنشاء قائمة
     # ------------------------------------------------------
 
     if context.user_data.get(
         "state"
-    ) == "creating_menu":
+    ) in [
+        "creating_main_menu",
+        "creating_submenu"
+    ]:
 
         await save_new_menu(
             update,
@@ -671,18 +676,46 @@ async def handle_message(
 
 
     # ------------------------------------------------------
-    # فتح قائمة بالاسم
+    # إنشاء قائمة رئيسية
+    # ------------------------------------------------------
+
+    if النص == "➕ إنشاء قائمة رئيسية":
+
+        await create_main_menu_start(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إنشاء قائمة فرعية
+    # ------------------------------------------------------
+
+    if النص == "➕ إنشاء قائمة فرعية":
+
+        await create_submenu_start(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # فتح قائمة
     # ------------------------------------------------------
 
     if النص.startswith("📂 "):
 
         menu_name = النص[3:].strip()
 
-        connection = get_connection()
-
         current_menu_id = context.user_data.get(
             "current_menu_id"
         )
+
+        connection = get_connection()
 
         if current_menu_id:
 
@@ -690,6 +723,7 @@ async def handle_message(
                 """
                 SELECT id
                 FROM menus
+
                 WHERE name = ?
                 AND parent_id = ?
                 """,
@@ -705,6 +739,7 @@ async def handle_message(
                 """
                 SELECT id
                 FROM menus
+
                 WHERE name = ?
                 AND parent_id IS NULL
                 """,
@@ -791,7 +826,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "➕ إضافة محتوى\n\n"
-            "سيتم تفعيلها في الخطوة القادمة."
+            "سيتم تفعيلها لاحقًا."
         )
 
         return
