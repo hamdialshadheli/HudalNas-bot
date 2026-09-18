@@ -371,7 +371,6 @@ async def save_new_menu(
 
     # ------------------------------------------------------
     # بعد إنشاء القائمة الفرعية
-    # نعيد المشرف إلى القائمة الأب
     # ------------------------------------------------------
 
     if state == "creating_submenu":
@@ -435,7 +434,10 @@ async def show_menus(
 
     menus = connection.execute(
         """
-        SELECT id, name, display_order
+        SELECT
+            id,
+            name,
+            display_order
 
         FROM menus
 
@@ -468,7 +470,21 @@ async def open_menu(
     menu_id
 ):
 
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ ليس لديك صلاحية."
+        )
+
+        return
+
     connection = get_connection()
+
+    # ------------------------------------------------------
+    # جلب القائمة الحالية
+    # ------------------------------------------------------
 
     menu = connection.execute(
         """
@@ -494,6 +510,10 @@ async def open_menu(
 
         return
 
+    # ------------------------------------------------------
+    # جلب القوائم الفرعية
+    # ------------------------------------------------------
+
     children = connection.execute(
         """
         SELECT
@@ -514,11 +534,19 @@ async def open_menu(
 
     connection.close()
 
+    # ------------------------------------------------------
+    # حفظ موقع القائمة الحالية
+    # ------------------------------------------------------
+
     context.user_data["current_menu_id"] = menu["id"]
 
     context.user_data["current_menu_name"] = menu["name"]
 
     context.user_data["current_parent_id"] = menu["parent_id"]
+
+    # ------------------------------------------------------
+    # عرض القائمة
+    # ------------------------------------------------------
 
     await update.message.reply_text(
         f"📂 {menu['name']}\n\n"
@@ -530,7 +558,7 @@ async def open_menu(
 
 
 # ==========================================================
-# الرجوع
+# الرجوع في إدارة القوائم
 # ==========================================================
 
 async def go_back(
@@ -578,6 +606,59 @@ async def cancel_action(
 
 
 # ==========================================================
+# البحث عن القائمة بالاسم
+# ==========================================================
+
+def find_menu_by_name(
+    menu_name,
+    parent_id=None
+):
+
+    connection = get_connection()
+
+    if parent_id is None:
+
+        menu = connection.execute(
+            """
+            SELECT
+                id,
+                name,
+                parent_id
+
+            FROM menus
+
+            WHERE name = ?
+            AND parent_id IS NULL
+            """,
+            (menu_name,)
+        ).fetchone()
+
+    else:
+
+        menu = connection.execute(
+            """
+            SELECT
+                id,
+                name,
+                parent_id
+
+            FROM menus
+
+            WHERE name = ?
+            AND parent_id = ?
+            """,
+            (
+                menu_name,
+                parent_id
+            )
+        ).fetchone()
+
+    connection.close()
+
+    return menu
+
+
+# ==========================================================
 # استقبال الرسائل
 # ==========================================================
 
@@ -589,14 +670,16 @@ async def handle_message(
     if not update.message:
         return
 
-    النص = update.message.text
+    if not update.message.text:
+        return
+
+    النص = update.message.text.strip()
 
     user_id = update.effective_user.id
 
     register_user(
         update.effective_user
     )
-
 
     # ------------------------------------------------------
     # إلغاء
@@ -610,7 +693,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # إذا كنا في وضع إنشاء قائمة
@@ -630,7 +712,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # الإدارة
     # ------------------------------------------------------
@@ -643,7 +724,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # واجهة المستخدم
@@ -660,7 +740,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # إدارة القوائم
     # ------------------------------------------------------
@@ -673,7 +752,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # إنشاء قائمة رئيسية
@@ -688,7 +766,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # إنشاء قائمة فرعية
     # ------------------------------------------------------
@@ -702,51 +779,80 @@ async def handle_message(
 
         return
 
+    # ------------------------------------------------------
+    # الرجوع
+    # ------------------------------------------------------
+
+    if النص == "◀️ رجوع":
+
+        if is_admin(user_id):
+
+            # إذا كانت هناك قائمة مفتوحة
+            if context.user_data.get(
+                "current_menu_id"
+            ):
+
+                await go_back(
+                    update,
+                    context
+                )
+
+            else:
+
+                context.user_data.clear()
+
+                await show_admin_panel(
+                    update,
+                    context
+                )
+
+        return
 
     # ------------------------------------------------------
-    # فتح قائمة
+    # فتح قائمة رئيسية أو فرعية
+    #
+    # مهم:
+    # أزرار القوائم في Telegram تحتوي على:
+    #
+    # 📂 اسم القائمة
+    #
+    # لذلك نحذف "📂 " قبل البحث في قاعدة البيانات.
     # ------------------------------------------------------
 
     if النص.startswith("📂 "):
 
-        menu_name = النص[3:].strip()
+        if not is_admin(user_id):
+
+            return
+
+        menu_name = النص[len("📂 "):].strip()
 
         current_menu_id = context.user_data.get(
             "current_menu_id"
         )
 
-        connection = get_connection()
+        # --------------------------------------------------
+        # إذا كنا داخل قائمة:
+        # نبحث عن القائمة الفرعية داخلها
+        # --------------------------------------------------
 
         if current_menu_id:
 
-            menu = connection.execute(
-                """
-                SELECT id
-                FROM menus
+            menu = find_menu_by_name(
+                menu_name,
+                current_menu_id
+            )
 
-                WHERE name = ?
-                AND parent_id = ?
-                """,
-                (
-                    menu_name,
-                    current_menu_id
-                )
-            ).fetchone()
+        # --------------------------------------------------
+        # إذا لم نكن داخل قائمة:
+        # نبحث عن القائمة الرئيسية
+        # --------------------------------------------------
 
         else:
 
-            menu = connection.execute(
-                """
-                SELECT id
-                FROM menus
-
-                WHERE name = ?
-                AND parent_id IS NULL
-                """,
-                (menu_name,)
-            ).fetchone()
-
-        connection.close()
+            menu = find_menu_by_name(
+                menu_name
+            )
 
         if menu:
 
@@ -756,8 +862,13 @@ async def handle_message(
                 menu["id"]
             )
 
-        return
+        else:
 
+            await update.message.reply_text(
+                "❌ لم يتم العثور على هذه القائمة."
+            )
+
+        return
 
     # ------------------------------------------------------
     # القرآن والثقافة
@@ -772,7 +883,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # الملازم
     # ------------------------------------------------------
@@ -785,7 +895,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # المحاضرات
@@ -800,7 +909,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # عن البوت
     # ------------------------------------------------------
@@ -813,7 +921,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # إضافة محتوى
@@ -831,7 +938,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # تعديل المحتوى
     # ------------------------------------------------------
@@ -847,7 +953,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # حذف المحتوى
@@ -865,7 +970,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # ترتيب العناصر
     # ------------------------------------------------------
@@ -882,7 +986,6 @@ async def handle_message(
 
         return
 
-
     # ------------------------------------------------------
     # المشرفون
     # ------------------------------------------------------
@@ -898,7 +1001,6 @@ async def handle_message(
         )
 
         return
-
 
     # ------------------------------------------------------
     # الإحصائيات
