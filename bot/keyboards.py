@@ -1,20 +1,18 @@
 from telegram import ReplyKeyboardMarkup, KeyboardButton
 
 
-# ==========================================================
-# دالة عامة لإنشاء لوحة أزرار Telegram
-# ==========================================================
-
 def make_keyboard(rows):
-
     buttons = []
 
     for row in rows:
+        row_buttons = []
 
-        buttons.append([
-            KeyboardButton(text)
-            for text in row
-        ])
+        for text in row:
+            row_buttons.append(
+                KeyboardButton(text)
+            )
+
+        buttons.append(row_buttons)
 
     return ReplyKeyboardMarkup(
         buttons,
@@ -38,7 +36,6 @@ def user_keyboard(is_admin_user=False):
     ]
 
     if is_admin_user:
-
         rows.append([
             "⚙️ الإدارة"
         ])
@@ -47,29 +44,14 @@ def user_keyboard(is_admin_user=False):
 
 
 # ==========================================================
-# واجهة القوائم العامة للمستخدم
+# القوائم العامة للمستخدم
 # ==========================================================
 
-def public_menu_keyboard(children, contents=None):
+def public_menu_keyboard(contents=None):
 
     rows = []
 
-    # ------------------------------------------------------
-    # القوائم الفرعية
-    # ------------------------------------------------------
-
-    for child in children:
-
-        rows.append([
-            f"📂 {child['name']}"
-        ])
-
-    # ------------------------------------------------------
-    # المحتوى
-    # ------------------------------------------------------
-
     if contents:
-
         for content in contents:
 
             icon = content_type_icon(
@@ -79,10 +61,6 @@ def public_menu_keyboard(children, contents=None):
             rows.append([
                 f"{icon} {content['title']}"
             ])
-
-    # ------------------------------------------------------
-    # الرجوع
-    # ------------------------------------------------------
 
     rows.append([
         "◀️ رجوع"
@@ -98,19 +76,12 @@ def public_menu_keyboard(children, contents=None):
 def content_type_icon(content_type):
 
     icons = {
-
         "text": "📝",
-
         "document": "📄",
-
         "photo": "🖼️",
-
         "video": "🎬",
-
         "audio": "🎧",
-
         "voice": "🎤",
-
         "url": "🔗",
     }
 
@@ -163,38 +134,27 @@ def menus_keyboard(menus):
 
 
 # ==========================================================
-# إدارة القائمة الحالية
+# داخل القائمة الرئيسية للمشرف
 # ==========================================================
 
-def menu_management_keyboard(children):
+def admin_menu_keyboard(contents=None):
 
     rows = []
 
-    # ------------------------------------------------------
-    # القوائم الفرعية الموجودة
-    # ------------------------------------------------------
+    if contents:
 
-    for child in children:
+        for content in contents:
 
-        rows.append([
-            f"📂 {child['name']}"
-        ])
+            icon = content_type_icon(
+                content["content_type"]
+            )
 
-    # ------------------------------------------------------
-    # عمليات القائمة الحالية
-    # ------------------------------------------------------
-
-    rows.append([
-        "➕ إضافة قائمة فرعية"
-    ])
+            rows.append([
+                f"{icon} {content['title']}"
+            ])
 
     rows.append([
         "➕ إضافة محتوى"
-    ])
-
-    rows.append([
-        "✏️ تعديل القائمة",
-        "🗑️ حذف القائمة"
     ])
 
     rows.append([
