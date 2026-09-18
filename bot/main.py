@@ -21,6 +21,7 @@ from bot.database import (
     initialize_database,
     register_user,
     is_admin,
+    ensure_admin,
 )
 
 from bot.keyboards import (
@@ -434,7 +435,10 @@ def main():
 
 
     # إنشاء قاعدة البيانات والجداول
-    initialize_database()
+       initialize_database()
+
+    # إضافة صاحب ADMIN_ID كمشرف تلقائيًا
+    ensure_admin(int(ADMIN_ID))
 
 
     # إنشاء تطبيق Telegram
