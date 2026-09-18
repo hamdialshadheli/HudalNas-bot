@@ -28,13 +28,14 @@ from bot.database import (
 from bot.keyboards import (
     user_keyboard,
     admin_keyboard,
+    menus_keyboard,
     back_keyboard,
     cancel_keyboard,
 )
 
 
 # ==========================================================
-# قراءة إعدادات البوت
+# إعدادات البوت
 # ==========================================================
 
 load_dotenv()
@@ -42,10 +43,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
-
-# ==========================================================
-# التحقق من الإعدادات
-# ==========================================================
 
 if not BOT_TOKEN:
     raise RuntimeError(
@@ -59,7 +56,7 @@ if not ADMIN_ID:
 
 
 # ==========================================================
-# الواجهة الرئيسية للمستخدم
+# الواجهة الرئيسية
 # ==========================================================
 
 async def show_public_home(
@@ -67,14 +64,10 @@ async def show_public_home(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
-
-    register_user(
-        update.effective_user
-    )
+    register_user(update.effective_user)
 
     admin_status = is_admin(
-        user_id
+        update.effective_user.id
     )
 
     await update.message.reply_text(
@@ -87,7 +80,7 @@ async def show_public_home(
 
 
 # ==========================================================
-# أمر /start
+# /start
 # ==========================================================
 
 async def start(
@@ -112,9 +105,9 @@ async def show_admin_panel(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
+    if not is_admin(
+        update.effective_user.id
+    ):
 
         await update.message.reply_text(
             "❌ ليس لديك صلاحية الدخول إلى لوحة الإدارة."
@@ -132,7 +125,7 @@ async def show_admin_panel(
 
 
 # ==========================================================
-# أمر /admin
+# /admin
 # ==========================================================
 
 async def admin_command(
@@ -147,7 +140,7 @@ async def admin_command(
 
 
 # ==========================================================
-# إنشاء قائمة
+# إنشاء قائمة رئيسية
 # ==========================================================
 
 async def create_menu_start(
@@ -155,9 +148,9 @@ async def create_menu_start(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
+    if not is_admin(
+        update.effective_user.id
+    ):
 
         await update.message.reply_text(
             "❌ ليس لديك صلاحية."
@@ -167,17 +160,59 @@ async def create_menu_start(
 
     context.user_data["state"] = "creating_menu"
 
+    context.user_data["parent_id"] = None
+
     await update.message.reply_text(
         "📂 إنشاء قائمة جديدة\n\n"
-        "✏️ اكتب اسم القائمة الجديدة:\n\n"
-        "مثال:\n"
-        "الملازم",
+        "✏️ اكتب اسم القائمة:",
         reply_markup=cancel_keyboard()
     )
 
 
 # ==========================================================
-# حفظ القائمة الجديدة
+# إنشاء قائمة فرعية
+# ==========================================================
+
+async def create_submenu_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ ليس لديك صلاحية."
+        )
+
+        return
+
+    parent_id = context.user_data.get(
+        "current_menu_id"
+    )
+
+    if not parent_id:
+
+        await update.message.reply_text(
+            "❌ لم يتم تحديد القائمة الرئيسية."
+        )
+
+        return
+
+    context.user_data["state"] = "creating_menu"
+
+    context.user_data["parent_id"] = parent_id
+
+    await update.message.reply_text(
+        "📂 إنشاء قائمة فرعية\n\n"
+        "✏️ اكتب اسم القائمة الفرعية:",
+        reply_markup=cancel_keyboard()
+    )
+
+
+# ==========================================================
+# حفظ قائمة جديدة
 # ==========================================================
 
 async def save_new_menu(
@@ -203,22 +238,39 @@ async def save_new_menu(
 
         await update.message.reply_text(
             "❌ اسم القائمة لا يمكن أن يكون فارغًا.\n\n"
-            "اكتب اسم القائمة:"
+            "اكتب الاسم مرة أخرى:"
         )
 
         return
 
+    parent_id = context.user_data.get(
+        "parent_id"
+    )
+
     connection = get_connection()
 
-    # التحقق من عدم وجود قائمة بنفس الاسم
+    # ------------------------------------------------------
+    # التحقق من الاسم داخل نفس المستوى
+    # ------------------------------------------------------
+
     existing = connection.execute(
         """
         SELECT id
         FROM menus
         WHERE name = ?
-        AND parent_id IS NULL
+        AND (
+            parent_id = ?
+            OR (
+                parent_id IS NULL
+                AND ? IS NULL
+            )
+        )
         """,
-        (menu_name,)
+        (
+            menu_name,
+            parent_id,
+            parent_id
+        )
     ).fetchone()
 
     if existing:
@@ -226,38 +278,61 @@ async def save_new_menu(
         connection.close()
 
         await update.message.reply_text(
-            "⚠️ توجد قائمة رئيسية بهذا الاسم بالفعل.\n\n"
+            "⚠️ توجد قائمة بهذا الاسم في نفس المستوى.\n\n"
             "اكتب اسمًا آخر:"
         )
 
         return
 
-    # معرفة ترتيب القائمة الجديدة
+    # ------------------------------------------------------
+    # تحديد الترتيب
+    # ------------------------------------------------------
+
     order_row = connection.execute(
         """
-        SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+        SELECT COALESCE(MAX(display_order), 0) + 1
+        AS next_order
+
         FROM menus
-        WHERE parent_id IS NULL
-        """
+
+        WHERE (
+            parent_id = ?
+            OR (
+                parent_id IS NULL
+                AND ? IS NULL
+            )
+        )
+        """,
+        (
+            parent_id,
+            parent_id
+        )
     ).fetchone()
 
     next_order = order_row["next_order"]
 
+    # ------------------------------------------------------
     # إنشاء القائمة
-    connection.execute(
+    # ------------------------------------------------------
+
+    cursor = connection.execute(
         """
         INSERT INTO menus (
             name,
             parent_id,
             display_order
         )
-        VALUES (?, NULL, ?)
+
+        VALUES (?, ?, ?)
         """,
         (
             menu_name,
+            parent_id,
             next_order
         )
     )
+
+    new_menu_id = cursor.lastrowid
 
     connection.commit()
     connection.close()
@@ -266,14 +341,137 @@ async def save_new_menu(
 
     await update.message.reply_text(
         "✅ تم إنشاء القائمة بنجاح.\n\n"
-        f"📂 اسم القائمة: {menu_name}\n"
+        f"📂 الاسم: {menu_name}\n"
+        f"🆔 ID: {new_menu_id}\n"
         f"🔢 الترتيب: {next_order}",
         reply_markup=admin_keyboard()
     )
 
 
 # ==========================================================
-# إلغاء العملية الحالية
+# عرض القوائم الرئيسية
+# ==========================================================
+
+async def show_menus(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ ليس لديك صلاحية."
+        )
+
+        return
+
+    connection = get_connection()
+
+    menus = connection.execute(
+        """
+        SELECT id, name, display_order
+        FROM menus
+        WHERE parent_id IS NULL
+        ORDER BY display_order ASC, id ASC
+        """
+    ).fetchall()
+
+    connection.close()
+
+    if not menus:
+
+        await update.message.reply_text(
+            "📂 إدارة القوائم\n\n"
+            "لا توجد قوائم حتى الآن.",
+            reply_markup=admin_keyboard()
+        )
+
+        return
+
+    await update.message.reply_text(
+        "📂 اختر القائمة التي تريد إدارتها:",
+        reply_markup=menus_keyboard(menus)
+    )
+
+
+# ==========================================================
+# فتح قائمة
+# ==========================================================
+
+async def open_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    menu_id
+):
+
+    connection = get_connection()
+
+    menu = connection.execute(
+        """
+        SELECT id, name, parent_id
+        FROM menus
+        WHERE id = ?
+        """,
+        (menu_id,)
+    ).fetchone()
+
+    if not menu:
+
+        connection.close()
+
+        await update.message.reply_text(
+            "❌ القائمة غير موجودة."
+        )
+
+        return
+
+    children = connection.execute(
+        """
+        SELECT id, name, display_order
+        FROM menus
+        WHERE parent_id = ?
+        ORDER BY display_order ASC, id ASC
+        """,
+        (menu_id,)
+    ).fetchall()
+
+    connection.close()
+
+    context.user_data["current_menu_id"] = menu["id"]
+
+    context.user_data["current_menu_name"] = menu["name"]
+
+    context.user_data["current_parent_id"] = menu["parent_id"]
+
+    الصفوف = []
+
+    for child in children:
+
+        الصفوف.append([
+            f"📂 {child['name']}"
+        ])
+
+    الصفوف.append([
+        "➕ إنشاء قائمة فرعية"
+    ])
+
+    الصفوف.append([
+        "◀️ رجوع"
+    ])
+
+    from bot.keyboards import make_keyboard
+
+    await update.message.reply_text(
+        f"📂 القائمة: {menu['name']}\n\n"
+        "اختر أحد العناصر:",
+        reply_markup=make_keyboard(الصفوف)
+    )
+
+
+# ==========================================================
+# إلغاء العملية
 # ==========================================================
 
 async def cancel_action(
@@ -283,25 +481,60 @@ async def cancel_action(
 
     context.user_data.clear()
 
-    if is_admin(
-        update.effective_user.id
-    ):
-
-        await update.message.reply_text(
-            "❌ تم إلغاء العملية.",
-            reply_markup=admin_keyboard()
-        )
-
-    else:
-
-        await show_public_home(
-            update,
-            context
-        )
+    await update.message.reply_text(
+        "❌ تم إلغاء العملية.",
+        reply_markup=admin_keyboard()
+    )
 
 
 # ==========================================================
-# استقبال رسائل وأزرار Telegram
+# رجوع
+# ==========================================================
+
+async def go_back(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    current_parent_id = context.user_data.get(
+        "current_parent_id"
+    )
+
+    if current_parent_id:
+
+        connection = get_connection()
+
+        parent = connection.execute(
+            """
+            SELECT id, name, parent_id
+            FROM menus
+            WHERE id = ?
+            """,
+            (current_parent_id,)
+        ).fetchone()
+
+        connection.close()
+
+        if parent:
+
+            await open_menu(
+                update,
+                context,
+                parent["id"]
+            )
+
+            return
+
+    context.user_data.clear()
+
+    await show_menus(
+        update,
+        context
+    )
+
+
+# ==========================================================
+# استقبال الرسائل
 # ==========================================================
 
 async def handle_message(
@@ -336,10 +569,54 @@ async def handle_message(
 
 
     # ------------------------------------------------------
-    # إذا كان المشرف يقوم بإنشاء قائمة
+    # رجوع
     # ------------------------------------------------------
 
-    if context.user_data.get("state") == "creating_menu":
+    if النص == "◀️ رجوع":
+
+        await go_back(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إنشاء قائمة فرعية
+    # ------------------------------------------------------
+
+    if النص == "➕ إنشاء قائمة فرعية":
+
+        await create_submenu_start(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إنشاء قائمة رئيسية
+    # ------------------------------------------------------
+
+    if النص == "➕ إنشاء قائمة":
+
+        await create_menu_start(
+            update,
+            context
+        )
+
+        return
+
+
+    # ------------------------------------------------------
+    # إذا كنا في وضع إنشاء قائمة
+    # ------------------------------------------------------
+
+    if context.user_data.get(
+        "state"
+    ) == "creating_menu":
 
         await save_new_menu(
             update,
@@ -380,12 +657,12 @@ async def handle_message(
 
 
     # ------------------------------------------------------
-    # إنشاء قائمة
+    # إدارة القوائم
     # ------------------------------------------------------
 
-    if النص == "➕ إنشاء قائمة":
+    if النص == "📂 إدارة القوائم":
 
-        await create_menu_start(
+        await show_menus(
             update,
             context
         )
@@ -394,57 +671,55 @@ async def handle_message(
 
 
     # ------------------------------------------------------
-    # إدارة القوائم
+    # فتح قائمة بالاسم
     # ------------------------------------------------------
 
-    if النص == "📂 إدارة القوائم":
+    if النص.startswith("📂 "):
 
-        if not is_admin(user_id):
-
-            await update.message.reply_text(
-                "❌ ليس لديك صلاحية."
-            )
-
-            return
+        menu_name = النص[3:].strip()
 
         connection = get_connection()
 
-        menus = connection.execute(
-            """
-            SELECT id, name, display_order
-            FROM menus
-            WHERE parent_id IS NULL
-            ORDER BY display_order ASC, id ASC
-            """
-        ).fetchall()
+        current_menu_id = context.user_data.get(
+            "current_menu_id"
+        )
+
+        if current_menu_id:
+
+            menu = connection.execute(
+                """
+                SELECT id
+                FROM menus
+                WHERE name = ?
+                AND parent_id = ?
+                """,
+                (
+                    menu_name,
+                    current_menu_id
+                )
+            ).fetchone()
+
+        else:
+
+            menu = connection.execute(
+                """
+                SELECT id
+                FROM menus
+                WHERE name = ?
+                AND parent_id IS NULL
+                """,
+                (menu_name,)
+            ).fetchone()
 
         connection.close()
 
-        if not menus:
+        if menu:
 
-            await update.message.reply_text(
-                "📂 إدارة القوائم\n\n"
-                "لا توجد قوائم منشأة حتى الآن.\n\n"
-                "استخدم ➕ إنشاء قائمة لإضافة أول قائمة.",
-                reply_markup=admin_keyboard()
+            await open_menu(
+                update,
+                context,
+                menu["id"]
             )
-
-            return
-
-        رسالة = "📂 القوائم الرئيسية:\n\n"
-
-        for menu in menus:
-
-            رسالة += (
-                f"🔹 {menu['name']}\n"
-                f"   ID: {menu['id']}\n"
-                f"   الترتيب: {menu['display_order']}\n\n"
-            )
-
-        await update.message.reply_text(
-            رسالة,
-            reply_markup=admin_keyboard()
-        )
 
         return
 
@@ -457,7 +732,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "📖 القرآن والثقافة\n\n"
-            "سيتم إنشاء الأقسام والفروع هنا."
+            "سيتم ربط هذا القسم بالقوائم لاحقًا."
         )
 
         return
@@ -471,7 +746,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "📚 الملازم\n\n"
-            "سيتم إنشاء قسم الملازم هنا."
+            "سيتم ربط هذا القسم بالقوائم لاحقًا."
         )
 
         return
@@ -485,7 +760,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "🎧 المحاضرات\n\n"
-            "سيتم إنشاء قسم المحاضرات هنا."
+            "سيتم ربط هذا القسم بالقوائم لاحقًا."
         )
 
         return
@@ -512,17 +787,11 @@ async def handle_message(
     if النص == "➕ إضافة محتوى":
 
         if not is_admin(user_id):
-
-            await update.message.reply_text(
-                "❌ ليس لديك صلاحية."
-            )
-
             return
 
         await update.message.reply_text(
             "➕ إضافة محتوى\n\n"
-            "سيتم تفعيل إضافة النصوص والصور "
-            "والفيديو والصوت والملفات."
+            "سيتم تفعيلها في الخطوة القادمة."
         )
 
         return
@@ -539,7 +808,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "✏️ تعديل المحتوى\n\n"
-            "سيتم تفعيل هذه الوظيفة لاحقًا."
+            "سيتم تفعيلها لاحقًا."
         )
 
         return
@@ -556,7 +825,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "🗑️ حذف المحتوى\n\n"
-            "سيتم تفعيل هذه الوظيفة لاحقًا."
+            "سيتم تفعيلها لاحقًا."
         )
 
         return
@@ -573,7 +842,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "↕️ ترتيب العناصر\n\n"
-            "سيتم تفعيل هذه الوظيفة لاحقًا."
+            "سيتم تفعيلها لاحقًا."
         )
 
         return
@@ -590,7 +859,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "👥 المشرفون\n\n"
-            "سيتم تفعيل إدارة المشرفين لاحقًا."
+            "سيتم تفعيلها لاحقًا."
         )
 
         return
@@ -607,7 +876,7 @@ async def handle_message(
 
         await update.message.reply_text(
             "📊 الإحصائيات\n\n"
-            "سيتم تفعيل الإحصائيات لاحقًا."
+            "سيتم تفعيلها لاحقًا."
         )
 
         return
@@ -634,26 +903,18 @@ def main():
         flush=True
     )
 
-
-    # إنشاء قاعدة البيانات
     initialize_database()
 
-
-    # تسجيل صاحب ADMIN_ID كمشرف
     ensure_admin(
         int(ADMIN_ID)
     )
 
-
-    # إنشاء تطبيق Telegram
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-
-    # أمر /start
     application.add_handler(
         CommandHandler(
             "start",
@@ -661,8 +922,6 @@ def main():
         )
     )
 
-
-    # أمر /admin
     application.add_handler(
         CommandHandler(
             "admin",
@@ -670,15 +929,12 @@ def main():
         )
     )
 
-
-    # استقبال الرسائل النصية
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_message
         )
     )
-
 
     print(
         "========================================",
@@ -695,8 +951,6 @@ def main():
         flush=True
     )
 
-
-    # تشغيل البوت
     application.run_polling(
         drop_pending_updates=False
     )
