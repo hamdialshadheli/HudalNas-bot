@@ -16,9 +16,13 @@ def make_keyboard(rows):
         buttons,
         resize_keyboard=True,
         one_time_keyboard=False,
-        is_persistent=True
+        is_persistent=True,
     )
 
+
+# =========================================================
+# واجهة المستخدم الرئيسية
+# =========================================================
 
 def user_keyboard(is_admin_user=False):
     rows = [
@@ -34,10 +38,14 @@ def user_keyboard(is_admin_user=False):
     return make_keyboard(rows)
 
 
+# =========================================================
+# القائمة العامة
+# =========================================================
+
 def public_menu_keyboard(
     children=None,
     contents=None,
-    media_groups=None
+    media_groups=None,
 ):
     rows = []
 
@@ -53,7 +61,9 @@ def public_menu_keyboard(
 
     # المحتويات الفردية
     for content in contents:
-        icon = content_type_icon(content["content_type"])
+        icon = content_type_icon(
+            content["content_type"]
+        )
 
         rows.append([
             f"{icon} {content['title']}"
@@ -61,7 +71,9 @@ def public_menu_keyboard(
 
     # مجموعات الوسائط
     for group in media_groups:
-        icon = media_group_icon(group["media_type"])
+        icon = media_group_icon(
+            group["media_type"]
+        )
 
         rows.append([
             f"{icon} {group['title']}"
@@ -71,6 +83,10 @@ def public_menu_keyboard(
 
     return make_keyboard(rows)
 
+
+# =========================================================
+# أيقونات المحتوى
+# =========================================================
 
 def content_type_icon(content_type):
     icons = {
@@ -83,7 +99,10 @@ def content_type_icon(content_type):
         "url": "🔗",
     }
 
-    return icons.get(content_type, "📄")
+    return icons.get(
+        content_type,
+        "📄",
+    )
 
 
 def media_group_icon(media_type):
@@ -93,8 +112,15 @@ def media_group_icon(media_type):
         "audio": "🎵",
     }
 
-    return icons.get(media_type, "📁")
+    return icons.get(
+        media_type,
+        "📁",
+    )
 
+
+# =========================================================
+# لوحة الإدارة الرئيسية
+# =========================================================
 
 def admin_keyboard():
     return make_keyboard([
@@ -103,6 +129,10 @@ def admin_keyboard():
         ["👤 واجهة المستخدم"],
     ])
 
+
+# =========================================================
+# إدارة القوائم الرئيسية
+# =========================================================
 
 def menus_keyboard(menus):
     rows = []
@@ -123,10 +153,14 @@ def menus_keyboard(menus):
     return make_keyboard(rows)
 
 
+# =========================================================
+# قائمة الإدارة داخل أي قائمة أو فرع
+# =========================================================
+
 def admin_menu_keyboard(
     children=None,
     contents=None,
-    media_groups=None
+    media_groups=None,
 ):
     rows = []
 
@@ -142,7 +176,9 @@ def admin_menu_keyboard(
 
     # المحتويات الفردية
     for content in contents:
-        icon = content_type_icon(content["content_type"])
+        icon = content_type_icon(
+            content["content_type"]
+        )
 
         rows.append([
             f"{icon} {content['title']}"
@@ -150,39 +186,21 @@ def admin_menu_keyboard(
 
     # مجموعات الوسائط
     for group in media_groups:
-        icon = media_group_icon(group["media_type"])
+        icon = media_group_icon(
+            group["media_type"]
+        )
 
         rows.append([
             f"{icon} {group['title']}"
         ])
 
-    # أدوات الإدارة
+    # أدوات القائمة
     rows.append([
         "➕ إضافة فرع"
     ])
 
     rows.append([
-        "📝 إضافة نص"
-    ])
-
-    rows.append([
-        "🖼️ إضافة صور متعددة"
-    ])
-
-    rows.append([
-        "🎬 إضافة فيديوهات متعددة"
-    ])
-
-    rows.append([
-        "🎵 إضافة أصوات متعددة"
-    ])
-
-    rows.append([
-        "📄 إضافة ملف"
-    ])
-
-    rows.append([
-        "🔗 إضافة رابط"
+        "📦 إضافة محتوى"
     ])
 
     rows.append([
@@ -192,22 +210,25 @@ def admin_menu_keyboard(
     return make_keyboard(rows)
 
 
-def content_type_keyboard():
-    return make_keyboard([
-        ["📝 نص"],
-        ["📄 ملف / PDF", "🔗 رابط"],
-        ["❌ إلغاء"],
-    ])
+# =========================================================
+# قائمة أنواع المحتوى
+# =========================================================
 
-
-def media_group_type_keyboard():
+def content_menu_keyboard():
     return make_keyboard([
+        ["📝 إضافة نص"],
         ["🖼️ إضافة صور متعددة"],
         ["🎬 إضافة فيديوهات متعددة"],
         ["🎵 إضافة أصوات متعددة"],
-        ["❌ إلغاء"],
+        ["📄 إضافة ملف"],
+        ["🔗 إضافة رابط"],
+        ["◀️ رجوع"],
     ])
 
+
+# =========================================================
+# لوحة إنهاء مجموعة الوسائط
+# =========================================================
 
 def media_group_finish_keyboard():
     return make_keyboard([
@@ -215,6 +236,10 @@ def media_group_finish_keyboard():
         ["❌ إلغاء"],
     ])
 
+
+# =========================================================
+# زر الإلغاء
+# =========================================================
 
 def cancel_keyboard():
     return make_keyboard([
