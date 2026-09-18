@@ -5,24 +5,19 @@ from telegram import ReplyKeyboardMarkup, KeyboardButton
 # دالة عامة لإنشاء لوحة أزرار Telegram
 # ==========================================================
 
-def make_keyboard(الصفوف):
+def make_keyboard(rows):
 
-    الأزرار = []
+    buttons = []
 
-    for صف in الصفوف:
+    for row in rows:
 
-        صف_أزرار = []
-
-        for نص in صف:
-
-            صف_أزرار.append(
-                KeyboardButton(نص)
-            )
-
-        الأزرار.append(صف_أزرار)
+        buttons.append([
+            KeyboardButton(text)
+            for text in row
+        ])
 
     return ReplyKeyboardMarkup(
-        الأزرار,
+        buttons,
         resize_keyboard=True,
         one_time_keyboard=False,
         is_persistent=True,
@@ -35,7 +30,7 @@ def make_keyboard(الصفوف):
 
 def user_keyboard(is_admin_user=False):
 
-    الصفوف = [
+    rows = [
         ["📖 القرآن والثقافة"],
         ["📚 الملازم"],
         ["🎧 المحاضرات"],
@@ -44,20 +39,20 @@ def user_keyboard(is_admin_user=False):
 
     if is_admin_user:
 
-        الصفوف.append([
+        rows.append([
             "⚙️ الإدارة"
         ])
 
-    return make_keyboard(الصفوف)
+    return make_keyboard(rows)
 
 
 # ==========================================================
-# واجهة القوائم للمستخدم
+# واجهة القوائم العامة للمستخدم
 # ==========================================================
 
 def public_menu_keyboard(children, contents=None):
 
-    الصفوف = []
+    rows = []
 
     # ------------------------------------------------------
     # القوائم الفرعية
@@ -65,7 +60,7 @@ def public_menu_keyboard(children, contents=None):
 
     for child in children:
 
-        الصفوف.append([
+        rows.append([
             f"📂 {child['name']}"
         ])
 
@@ -81,19 +76,19 @@ def public_menu_keyboard(children, contents=None):
                 content["content_type"]
             )
 
-            الصفوف.append([
+            rows.append([
                 f"{icon} {content['title']}"
             ])
 
     # ------------------------------------------------------
-    # رجوع
+    # الرجوع
     # ------------------------------------------------------
 
-    الصفوف.append([
+    rows.append([
         "◀️ رجوع"
     ])
 
-    return make_keyboard(الصفوف)
+    return make_keyboard(rows)
 
 
 # ==========================================================
@@ -126,7 +121,7 @@ def content_type_icon(content_type):
 
 
 # ==========================================================
-# لوحة الإدارة
+# لوحة الإدارة الرئيسية
 # ==========================================================
 
 def admin_keyboard():
@@ -135,64 +130,78 @@ def admin_keyboard():
 
         ["📂 إدارة القوائم"],
 
-        ["➕ إضافة محتوى", "✏️ تعديل المحتوى"],
-
-        ["🗑️ حذف المحتوى", "↕️ ترتيب العناصر"],
-
         ["👥 المشرفون", "📊 الإحصائيات"],
 
         ["👤 واجهة المستخدم"],
+
     ])
 
 
 # ==========================================================
-# إدارة القوائم الرئيسية للمشرف
+# إدارة القوائم الرئيسية
 # ==========================================================
 
 def menus_keyboard(menus):
 
-    الصفوف = []
+    rows = []
 
     for menu in menus:
 
-        الصفوف.append([
+        rows.append([
             f"📂 {menu['name']}"
         ])
 
-    الصفوف.append([
+    rows.append([
         "➕ إنشاء قائمة رئيسية"
     ])
 
-    الصفوف.append([
+    rows.append([
         "◀️ رجوع"
     ])
 
-    return make_keyboard(الصفوف)
+    return make_keyboard(rows)
 
 
 # ==========================================================
-# إدارة القوائم الفرعية للمشرف
+# إدارة القائمة الحالية
 # ==========================================================
 
 def menu_management_keyboard(children):
 
-    الصفوف = []
+    rows = []
+
+    # ------------------------------------------------------
+    # القوائم الفرعية الموجودة
+    # ------------------------------------------------------
 
     for child in children:
 
-        الصفوف.append([
+        rows.append([
             f"📂 {child['name']}"
         ])
 
-    الصفوف.append([
-        "➕ إنشاء قائمة فرعية"
+    # ------------------------------------------------------
+    # عمليات القائمة الحالية
+    # ------------------------------------------------------
+
+    rows.append([
+        "➕ إضافة قائمة فرعية"
     ])
 
-    الصفوف.append([
+    rows.append([
+        "➕ إضافة محتوى"
+    ])
+
+    rows.append([
+        "✏️ تعديل القائمة",
+        "🗑️ حذف القائمة"
+    ])
+
+    rows.append([
         "◀️ رجوع"
     ])
 
-    return make_keyboard(الصفوف)
+    return make_keyboard(rows)
 
 
 # ==========================================================
@@ -212,6 +221,7 @@ def content_type_keyboard():
         ["🎤 رسالة صوتية", "🔗 رابط"],
 
         ["❌ إلغاء"],
+
     ])
 
 
