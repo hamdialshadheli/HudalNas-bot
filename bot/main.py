@@ -30,6 +30,7 @@ from bot.keyboards import (
     admin_keyboard,
     menus_keyboard,
     menu_management_keyboard,
+    public_menu_keyboard,
     cancel_keyboard,
 )
 
@@ -66,6 +67,11 @@ async def show_public_home(
 
     register_user(
         update.effective_user
+    )
+
+    context.user_data.pop(
+        "public_menu_id",
+        None
     )
 
     admin_status = is_admin(
@@ -319,9 +325,7 @@ async def save_new_menu(
             SELECT COALESCE(
                 MAX(display_order), 0
             ) + 1 AS next_order
-
             FROM menus
-
             WHERE parent_id IS NULL
             """
         ).fetchone()
@@ -333,9 +337,7 @@ async def save_new_menu(
             SELECT COALESCE(
                 MAX(display_order), 0
             ) + 1 AS next_order
-
             FROM menus
-
             WHERE parent_id = ?
             """,
             (parent_id,)
@@ -354,7 +356,6 @@ async def save_new_menu(
             parent_id,
             display_order
         )
-
         VALUES (?, ?, ?)
         """,
         (
@@ -412,7 +413,7 @@ async def save_new_menu(
 
 
 # ==========================================================
-# عرض القوائم الرئيسية
+# عرض القوائم الرئيسية للمشرف
 # ==========================================================
 
 async def show_menus(
@@ -438,11 +439,8 @@ async def show_menus(
             id,
             name,
             display_order
-
         FROM menus
-
         WHERE parent_id IS NULL
-
         ORDER BY
             display_order ASC,
             id ASC
@@ -461,7 +459,7 @@ async def show_menus(
 
 
 # ==========================================================
-# فتح قائمة
+# فتح قائمة للمشرف
 # ==========================================================
 
 async def open_menu(
@@ -482,19 +480,13 @@ async def open_menu(
 
     connection = get_connection()
 
-    # ------------------------------------------------------
-    # جلب القائمة الحالية
-    # ------------------------------------------------------
-
     menu = connection.execute(
         """
         SELECT
             id,
             name,
             parent_id
-
         FROM menus
-
         WHERE id = ?
         """,
         (menu_id,)
@@ -510,21 +502,14 @@ async def open_menu(
 
         return
 
-    # ------------------------------------------------------
-    # جلب القوائم الفرعية
-    # ------------------------------------------------------
-
     children = connection.execute(
         """
         SELECT
             id,
             name,
             display_order
-
         FROM menus
-
         WHERE parent_id = ?
-
         ORDER BY
             display_order ASC,
             id ASC
@@ -534,19 +519,11 @@ async def open_menu(
 
     connection.close()
 
-    # ------------------------------------------------------
-    # حفظ موقع القائمة الحالية
-    # ------------------------------------------------------
-
     context.user_data["current_menu_id"] = menu["id"]
 
     context.user_data["current_menu_name"] = menu["name"]
 
     context.user_data["current_parent_id"] = menu["parent_id"]
-
-    # ------------------------------------------------------
-    # عرض القائمة
-    # ------------------------------------------------------
 
     await update.message.reply_text(
         f"📂 {menu['name']}\n\n"
@@ -589,24 +566,7 @@ async def go_back(
 
 
 # ==========================================================
-# إلغاء
-# ==========================================================
-
-async def cancel_action(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "❌ تم إلغاء العملية.",
-        reply_markup=admin_keyboard()
-    )
-
-
-# ==========================================================
-# البحث عن القائمة بالاسم
+# البحث عن قائمة بالاسم
 # ==========================================================
 
 def find_menu_by_name(
@@ -624,9 +584,7 @@ def find_menu_by_name(
                 id,
                 name,
                 parent_id
-
             FROM menus
-
             WHERE name = ?
             AND parent_id IS NULL
             """,
@@ -641,9 +599,7 @@ def find_menu_by_name(
                 id,
                 name,
                 parent_id
-
             FROM menus
-
             WHERE name = ?
             AND parent_id = ?
             """,
@@ -656,6 +612,208 @@ def find_menu_by_name(
     connection.close()
 
     return menu
+
+
+# ==========================================================
+# فتح قائمة للمستخدم العادي
+# ==========================================================
+
+async def open_public_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    menu_id
+):
+
+    connection = get_connection()
+
+    menu = connection.execute(
+        """
+        SELECT
+            id,
+            name,
+            parent_id
+        FROM menus
+        WHERE id = ?
+        """
+        ,
+        (menu_id,)
+    ).fetchone()
+
+    if not menu:
+
+        connection.close()
+
+        await update.message.reply_text(
+            "❌ القسم غير موجود."
+        )
+
+        return
+
+    children = connection.execute(
+        """
+        SELECT
+            id,
+            name,
+            display_order
+        FROM menus
+        WHERE parent_id = ?
+        ORDER BY
+            display_order ASC,
+            id ASC
+        """,
+        (menu_id,)
+    ).fetchall()
+
+    connection.close()
+
+    context.user_data["public_menu_id"] = menu["id"]
+
+    context.user_data["public_parent_id"] = menu["parent_id"]
+
+    context.user_data["public_menu_name"] = menu["name"]
+
+    if children:
+
+        await update.message.reply_text(
+            f"📂 {menu['name']}\n\n"
+            "اختر من القائمة:",
+            reply_markup=public_menu_keyboard(
+                children
+            )
+        )
+
+    else:
+
+        await update.message.reply_text(
+            f"📂 {menu['name']}\n\n"
+            "لا توجد عناصر داخل هذا القسم حاليًا.",
+            reply_markup=public_menu_keyboard([])
+        )
+
+
+# ==========================================================
+# ربط الأزرار الرئيسية بالقوائم التي أنشأها المشرف
+# ==========================================================
+
+async def open_public_root_by_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    menu_name
+):
+
+    menu = find_menu_by_name(
+        menu_name
+    )
+
+    if not menu:
+
+        await update.message.reply_text(
+            "ℹ️ هذا القسم لم يتم تجهيزه بعد."
+        )
+
+        return
+
+    await open_public_menu(
+        update,
+        context,
+        menu["id"]
+    )
+
+
+# ==========================================================
+# الرجوع في واجهة المستخدم
+# ==========================================================
+
+async def go_back_public(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    current_menu_id = context.user_data.get(
+        "public_menu_id"
+    )
+
+    if not current_menu_id:
+
+        await show_public_home(
+            update,
+            context
+        )
+
+        return
+
+    connection = get_connection()
+
+    current_menu = connection.execute(
+        """
+        SELECT
+            id,
+            parent_id
+        FROM menus
+        WHERE id = ?
+        """,
+        (current_menu_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if not current_menu:
+
+        await show_public_home(
+            update,
+            context
+        )
+
+        return
+
+    parent_id = current_menu["parent_id"]
+
+    if parent_id is None:
+
+        context.user_data.pop(
+            "public_menu_id",
+            None
+        )
+
+        context.user_data.pop(
+            "public_parent_id",
+            None
+        )
+
+        context.user_data.pop(
+            "public_menu_name",
+            None
+        )
+
+        await show_public_home(
+            update,
+            context
+        )
+
+        return
+
+    await open_public_menu(
+        update,
+        context,
+        parent_id
+    )
+
+
+# ==========================================================
+# إلغاء
+# ==========================================================
+
+async def cancel_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ تم إلغاء العملية.",
+        reply_markup=admin_keyboard()
+    )
 
 
 # ==========================================================
@@ -785,9 +943,27 @@ async def handle_message(
 
     if النص == "◀️ رجوع":
 
+        # ----------------------------------------------
+        # إذا كان المستخدم داخل شجرة القوائم العامة
+        # ----------------------------------------------
+
+        if context.user_data.get(
+            "public_menu_id"
+        ):
+
+            await go_back_public(
+                update,
+                context
+            )
+
+            return
+
+        # ----------------------------------------------
+        # إذا كان المشرف داخل إدارة القوائم
+        # ----------------------------------------------
+
         if is_admin(user_id):
 
-            # إذا كانت هناك قائمة مفتوحة
             if context.user_data.get(
                 "current_menu_id"
             ):
@@ -809,14 +985,7 @@ async def handle_message(
         return
 
     # ------------------------------------------------------
-    # فتح قائمة رئيسية أو فرعية
-    #
-    # مهم:
-    # أزرار القوائم في Telegram تحتوي على:
-    #
-    # 📂 اسم القائمة
-    #
-    # لذلك نحذف "📂 " قبل البحث في قاعدة البيانات.
+    # فتح قائمة للمشرف
     # ------------------------------------------------------
 
     if النص.startswith("📂 "):
@@ -831,22 +1000,12 @@ async def handle_message(
             "current_menu_id"
         )
 
-        # --------------------------------------------------
-        # إذا كنا داخل قائمة:
-        # نبحث عن القائمة الفرعية داخلها
-        # --------------------------------------------------
-
         if current_menu_id:
 
             menu = find_menu_by_name(
                 menu_name,
                 current_menu_id
             )
-
-        # --------------------------------------------------
-        # إذا لم نكن داخل قائمة:
-        # نبحث عن القائمة الرئيسية
-        # --------------------------------------------------
 
         else:
 
@@ -870,15 +1029,25 @@ async def handle_message(
 
         return
 
+    # ======================================================
+    # الواجهة العامة
+    # ======================================================
+
     # ------------------------------------------------------
     # القرآن والثقافة
     # ------------------------------------------------------
 
     if النص == "📖 القرآن والثقافة":
 
-        await update.message.reply_text(
-            "📖 القرآن والثقافة\n\n"
-            "سيتم ربط هذا القسم بالقوائم لاحقًا."
+        context.user_data.pop(
+            "current_menu_id",
+            None
+        )
+
+        await open_public_root_by_name(
+            update,
+            context,
+            "القرآن والثقافة"
         )
 
         return
@@ -889,9 +1058,15 @@ async def handle_message(
 
     if النص == "📚 الملازم":
 
-        await update.message.reply_text(
-            "📚 الملازم\n\n"
-            "سيتم ربط هذا القسم بالقوائم لاحقًا."
+        context.user_data.pop(
+            "current_menu_id",
+            None
+        )
+
+        await open_public_root_by_name(
+            update,
+            context,
+            "الملازم"
         )
 
         return
@@ -902,9 +1077,15 @@ async def handle_message(
 
     if النص == "🎧 المحاضرات":
 
-        await update.message.reply_text(
-            "🎧 المحاضرات\n\n"
-            "سيتم ربط هذا القسم بالقوائم لاحقًا."
+        context.user_data.pop(
+            "current_menu_id",
+            None
+        )
+
+        await open_public_root_by_name(
+            update,
+            context,
+            "المحاضرات"
         )
 
         return
@@ -919,6 +1100,41 @@ async def handle_message(
             "🌿 هدى للناس\n\n"
             "منصة Telegram لتنظيم وعرض المحتوى."
         )
+
+        return
+
+    # ------------------------------------------------------
+    # فتح قائمة فرعية للمستخدم
+    # ------------------------------------------------------
+
+    if النص.startswith("📂 "):
+
+        public_menu_id = context.user_data.get(
+            "public_menu_id"
+        )
+
+        if public_menu_id:
+
+            menu_name = النص[len("📂 "):].strip()
+
+            menu = find_menu_by_name(
+                menu_name,
+                public_menu_id
+            )
+
+            if menu:
+
+                await open_public_menu(
+                    update,
+                    context,
+                    menu["id"]
+                )
+
+            else:
+
+                await update.message.reply_text(
+                    "❌ لم يتم العثور على هذا القسم."
+                )
 
         return
 
