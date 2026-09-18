@@ -1,5 +1,7 @@
 import os
+import sqlite3
 
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -14,34 +16,44 @@ from bot.database import (
     register_user,
     ensure_admin,
     is_admin,
-    get_connection,
     get_stats,
+    get_connection,
 )
 
 from bot.keyboards import (
+    make_keyboard,
     user_keyboard,
+    public_menu_keyboard,
     admin_keyboard,
     menus_keyboard,
     admin_menu_keyboard,
-    public_menu_keyboard,
-    content_type_keyboard,
+    content_type_icon,
+    media_group_icon,
+    media_group_finish_keyboard,
     cancel_keyboard,
 )
 
 
-# ==========================================================
-# الإعدادات
-# ==========================================================
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 
-# ==========================================================
-# أدوات مساعدة
-# ==========================================================
+# =========================================================
+# أدوات قاعدة البيانات
+# =========================================================
+
+ROOT_MENU_ID = 0
+
 
 def get_menu(menu_id):
+    if menu_id == ROOT_MENU_ID:
+        return {
+            "id": ROOT_MENU_ID,
+            "name": "القائمة الرئيسية",
+            "parent_id": None,
+        }
 
     connection = get_connection()
 
@@ -51,7 +63,7 @@ def get_menu(menu_id):
         FROM menus
         WHERE id = ?
         """,
-        (menu_id,)
+        (menu_id,),
     ).fetchone()
 
     connection.close()
@@ -59,26 +71,35 @@ def get_menu(menu_id):
     return row
 
 
-def get_main_menus():
-
+def get_children(menu_id):
     connection = get_connection()
 
-    rows = connection.execute(
-        """
-        SELECT *
-        FROM menus
-        WHERE parent_id IS NULL
-        ORDER BY display_order, id
-        """
-    ).fetchall()
+    if menu_id == ROOT_MENU_ID:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM menus
+            WHERE parent_id IS NULL
+            ORDER BY display_order, id
+            """
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM menus
+            WHERE parent_id = ?
+            ORDER BY display_order, id
+            """,
+            (menu_id,),
+        ).fetchall()
 
     connection.close()
 
     return rows
 
 
-def get_menu_contents(menu_id):
-
+def get_contents(menu_id):
     connection = get_connection()
 
     rows = connection.execute(
@@ -88,7 +109,7 @@ def get_menu_contents(menu_id):
         WHERE menu_id = ?
         ORDER BY display_order, id
         """,
-        (menu_id,)
+        (menu_id,),
     ).fetchall()
 
     connection.close()
@@ -96,111 +117,363 @@ def get_menu_contents(menu_id):
     return rows
 
 
-# ==========================================================
-# /start
-# ==========================================================
+def get_media_groups(menu_id):
+    connection = get_connection()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM media_groups
+        WHERE menu_id = ?
+        ORDER BY sort_order, id
+        """,
+        (menu_id,),
+    ).fetchall()
+
+    connection.close()
+
+    return rows
+
+
+def get_next_display_order(table_name, parent_field, parent_id):
+    connection = get_connection()
+
+    if parent_id == ROOT_MENU_ID:
+        row = connection.execute(
+            f"""
+            SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+            FROM {table_name}
+            WHERE {parent_field} IS NULL
+            """
+        ).fetchone()
+    else:
+        row = connection.execute(
+            f"""
+            SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+            FROM {table_name}
+            WHERE {parent_field} = ?
+            """,
+            (parent_id,),
+        ).fetchone()
+
+    connection.close()
+
+    return row["next_order"]
+
+
+def get_next_menu_order(parent_id):
+    connection = get_connection()
+
+    if parent_id == ROOT_MENU_ID:
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+            FROM menus
+            WHERE parent_id IS NULL
+            """
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+            FROM menus
+            WHERE parent_id = ?
+            """,
+            (parent_id,),
+        ).fetchone()
+
+    connection.close()
+
+    return row["next_order"]
+
+
+def get_next_group_order(menu_id):
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order
+        FROM media_groups
+        WHERE menu_id = ?
+        """,
+        (menu_id,),
+    ).fetchone()
+
+    connection.close()
+
+    return row["next_order"]
+
+
+# =========================================================
+# أدوات النصوص والأزرار
+# =========================================================
+
+SYSTEM_BUTTONS = {
+    "⚙️ الإدارة",
+    "📂 إدارة القوائم",
+    "👥 المشرفون",
+    "📊 الإحصائيات",
+    "👤 واجهة المستخدم",
+    "➕ إنشاء قائمة رئيسية",
+    "➕ إضافة فرع",
+    "📝 إضافة نص",
+    "🖼️ إضافة صور متعددة",
+    "🎬 إضافة فيديوهات متعددة",
+    "🎵 إضافة أصوات متعددة",
+    "📄 إضافة ملف",
+    "🔗 إضافة رابط",
+    "📝 نص",
+    "📄 ملف / PDF",
+    "🔗 رابط",
+    "✅ إنهاء",
+    "❌ إلغاء",
+    "◀️ رجوع",
+}
+
+
+def is_system_button(text):
+    if not text:
+        return False
+
+    if text in SYSTEM_BUTTONS:
+        return True
+
+    if text.startswith("📂 "):
+        return True
+
+    if text.startswith("📝 "):
+        return True
+
+    if text.startswith("📄 "):
+        return True
+
+    if text.startswith("🖼️ "):
+        return True
+
+    if text.startswith("🎬 "):
+        return True
+
+    if text.startswith("🎵 "):
+        return True
+
+    if text.startswith("🎤 "):
+        return True
+
+    if text.startswith("🔗 "):
+        return True
+
+    return False
+
+
+async def send_long_text(message, text):
+    if not text:
+        return
+
+    max_length = 4000
+
+    for start in range(0, len(text), max_length):
+        await message.reply_text(
+            text[start:start + max_length]
+        )
+
+
+# =========================================================
+# واجهة القائمة الرئيسية
+# =========================================================
+
+def build_root_keyboard(is_admin_user=False):
+    children = get_children(ROOT_MENU_ID)
+    contents = get_contents(ROOT_MENU_ID)
+    groups = get_media_groups(ROOT_MENU_ID)
+
+    rows = []
+
+    for menu in children:
+        rows.append([
+            f"📂 {menu['name']}"
+        ])
+
+    for content in contents:
+        icon = content_type_icon(content["content_type"])
+
+        rows.append([
+            f"{icon} {content['title']}"
+        ])
+
+    for group in groups:
+        icon = media_group_icon(group["media_type"])
+
+        rows.append([
+            f"{icon} {group['title']}"
+        ])
+
+    if is_admin_user:
+        rows.append(["⚙️ الإدارة"])
+
+    return make_keyboard(rows)
+
+
+async def show_root(update, context):
+    user = update.effective_user
 
     context.user_data.clear()
-
-    user = update.effective_user
 
     register_user(user)
 
     admin_user = is_admin(user.id)
 
     await update.message.reply_text(
-        "🌿 أهلاً وسهلاً بك في بوت هدى للناس\n\n"
-        "اختر من القائمة:",
-        reply_markup=user_keyboard(admin_user),
+        "📂 القائمة الرئيسية",
+        reply_markup=build_root_keyboard(admin_user),
     )
 
 
-# ==========================================================
-# واجهة الإدارة
-# ==========================================================
+# =========================================================
+# عرض قائمة للمستخدم
+# =========================================================
 
-async def show_admin_panel(update, context):
+async def show_public_menu(update, context, menu_id):
+    menu = get_menu(menu_id)
 
-    context.user_data.clear()
+    if not menu:
+        await update.message.reply_text(
+            "❌ القائمة غير موجودة."
+        )
+        return
+
+    context.user_data["current_menu_id"] = menu_id
+    context.user_data["mode"] = "public"
+
+    children = get_children(menu_id)
+    contents = get_contents(menu_id)
+    groups = get_media_groups(menu_id)
+
+    keyboard = public_menu_keyboard(
+        children=children,
+        contents=contents,
+        media_groups=groups,
+    )
 
     await update.message.reply_text(
-        "⚙️ لوحة الإدارة\n\n"
-        "اختر العملية المطلوبة:",
+        f"📂 {menu['name']}",
+        reply_markup=keyboard,
+    )
+
+
+# =========================================================
+# عرض قائمة الإدارة
+# =========================================================
+
+async def show_admin_menu(update, context, menu_id):
+    menu = get_menu(menu_id)
+
+    if not menu:
+        await update.message.reply_text(
+            "❌ القائمة غير موجودة."
+        )
+        return
+
+    context.user_data["current_menu_id"] = menu_id
+    context.user_data["mode"] = "admin"
+
+    children = get_children(menu_id)
+    contents = get_contents(menu_id)
+    groups = get_media_groups(menu_id)
+
+    keyboard = admin_menu_keyboard(
+        children=children,
+        contents=contents,
+        media_groups=groups,
+    )
+
+    await update.message.reply_text(
+        f"⚙️ إدارة: {menu['name']}",
+        reply_markup=keyboard,
+    )
+
+
+# =========================================================
+# البداية
+# =========================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_root(update, context)
+
+
+# =========================================================
+# لوحة الإدارة
+# =========================================================
+
+async def show_admin_panel(update, context):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "❌ هذا القسم خاص بالمشرفين."
+        )
+        return
+
+    context.user_data.clear()
+    context.user_data["mode"] = "admin_panel"
+
+    await update.message.reply_text(
+        "⚙️ لوحة الإدارة",
         reply_markup=admin_keyboard(),
     )
 
 
-# ==========================================================
+# =========================================================
 # إدارة القوائم
-# ==========================================================
+# =========================================================
 
-async def show_menus(update, context):
+async def show_menu_management(update, context):
+    if not is_admin(update.effective_user.id):
+        return
 
     context.user_data.clear()
+    context.user_data["mode"] = "menu_management"
 
-    menus = get_main_menus()
+    menus = get_children(ROOT_MENU_ID)
 
     await update.message.reply_text(
-        "📂 إدارة القوائم الرئيسية\n\n"
-        "اختر قائمة لفتحها:",
+        "📂 إدارة القوائم الرئيسية",
         reply_markup=menus_keyboard(menus),
     )
 
 
-# ==========================================================
+# =========================================================
 # إنشاء قائمة رئيسية
-# ==========================================================
+# =========================================================
 
-async def create_main_menu_start(update, context):
+async def start_create_main_menu(update, context):
+    if not is_admin(update.effective_user.id):
+        return
 
-    context.user_data.clear()
-
-    context.user_data["state"] = "create_main_menu"
+    context.user_data["state"] = "waiting_main_menu_name"
 
     await update.message.reply_text(
-        "➕ إنشاء قائمة رئيسية\n\n"
-        "أرسل اسم القائمة:",
+        "✏️ أرسل اسم القائمة الرئيسية:",
         reply_markup=cancel_keyboard(),
     )
 
 
-# ==========================================================
-# حفظ القائمة الرئيسية
-# ==========================================================
-
 async def save_main_menu(update, context):
-
     name = update.message.text.strip()
 
     if not name:
         await update.message.reply_text(
-            "⚠️ اسم القائمة لا يمكن أن يكون فارغاً."
+            "❌ اسم القائمة لا يمكن أن يكون فارغًا."
         )
         return
 
-    if name in [
-        "◀️ رجوع",
-        "❌ إلغاء",
-        "➕ إنشاء قائمة رئيسية",
-        "➕ إضافة محتوى",
-    ]:
+    if is_system_button(name):
         await update.message.reply_text(
-            "⚠️ هذا اسم محجوز لأحد أزرار النظام.\n"
-            "اختر اسماً مختلفاً."
+            "❌ هذا الاسم محجوز لأحد أزرار البوت.\n"
+            "اختر اسمًا آخر."
         )
         return
 
     connection = get_connection()
 
-    max_order = connection.execute(
-        """
-        SELECT COALESCE(MAX(display_order), 0)
-        FROM menus
-        WHERE parent_id IS NULL
-        """
-    ).fetchone()[0]
+    order = get_next_menu_order(ROOT_MENU_ID)
 
     connection.execute(
         """
@@ -211,291 +484,175 @@ async def save_main_menu(update, context):
         )
         VALUES (?, NULL, ?)
         """,
-        (
-            name,
-            max_order + 1,
-        )
+        (name, order),
     )
 
     connection.commit()
     connection.close()
 
-    context.user_data.clear()
-
-    menus = get_main_menus()
+    context.user_data.pop("state", None)
 
     await update.message.reply_text(
-        f"✅ تم إنشاء القائمة الرئيسية:\n\n"
-        f"📂 {name}",
-        reply_markup=menus_keyboard(menus),
+        f"✅ تم إنشاء القائمة الرئيسية:\n\n📂 {name}"
     )
 
+    await show_menu_management(update, context)
 
-# ==========================================================
-# فتح قائمة رئيسية للمشرف
-# ==========================================================
 
-async def open_admin_menu(update, context, menu_name):
+# =========================================================
+# إنشاء فرع داخل أي قائمة
+# =========================================================
 
-    menus = get_main_menus()
-
-    menu = None
-
-    for item in menus:
-
-        if item["name"] == menu_name:
-            menu = item
-            break
-
-    if menu is None:
-
-        await update.message.reply_text(
-            "⚠️ لم يتم العثور على القائمة."
-        )
-
+async def start_create_branch(update, context):
+    if not is_admin(update.effective_user.id):
         return
 
-    menu_id = menu["id"]
-
-    context.user_data.clear()
-
-    context.user_data["current_menu_id"] = menu_id
-    context.user_data["current_menu_name"] = menu["name"]
-    context.user_data["mode"] = "admin_menu"
-
-    contents = get_menu_contents(menu_id)
-
-    await update.message.reply_text(
-        f"📂 القائمة: {menu['name']}\n\n"
-        f"يمكنك الآن إضافة المحتوى داخل هذه القائمة.",
-        reply_markup=admin_menu_keyboard(contents),
+    menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
     )
 
-
-# ==========================================================
-# إضافة محتوى داخل القائمة الحالية
-# ==========================================================
-
-async def start_add_content(update, context):
-
-    menu_id = context.user_data.get("current_menu_id")
-
-    if not menu_id:
-
-        await update.message.reply_text(
-            "⚠️ يجب فتح القائمة أولاً ثم اختيار "
-            "«➕ إضافة محتوى»."
-        )
-
-        return
-
-    context.user_data["state"] = "select_content_type"
+    context.user_data["state"] = "waiting_branch_name"
+    context.user_data["branch_parent_id"] = menu_id
 
     await update.message.reply_text(
-        "➕ إضافة محتوى\n\n"
-        "اختر نوع المحتوى:",
-        reply_markup=content_type_keyboard(),
-    )
-
-
-# ==========================================================
-# اختيار نوع المحتوى
-# ==========================================================
-
-async def choose_content_type(update, context):
-
-    text = update.message.text.strip()
-
-    types = {
-
-        "📝 نص": "text",
-
-        "📄 ملف / PDF": "document",
-
-        "🖼️ صورة": "photo",
-
-        "🎬 فيديو": "video",
-
-        "🎧 صوت": "audio",
-
-        "🎤 رسالة صوتية": "voice",
-
-        "🔗 رابط": "url",
-
-    }
-
-    content_type = types.get(text)
-
-    if not content_type:
-
-        await update.message.reply_text(
-            "⚠️ اختر نوع المحتوى من الأزرار."
-        )
-
-        return
-
-    context.user_data["content_type"] = content_type
-    context.user_data["state"] = "enter_content_title"
-
-    await update.message.reply_text(
-        "✏️ أرسل عنوان المحتوى:"
-    )
-
-
-# ==========================================================
-# إدخال عنوان المحتوى
-# ==========================================================
-
-async def save_content_title(update, context):
-
-    title = update.message.text.strip()
-
-    if not title:
-
-        await update.message.reply_text(
-            "⚠️ العنوان لا يمكن أن يكون فارغاً."
-        )
-
-        return
-
-    context.user_data["content_title"] = title
-    context.user_data["state"] = "waiting_content"
-
-    content_type = context.user_data["content_type"]
-
-    messages = {
-
-        "text":
-            "📝 أرسل النص الآن.",
-
-        "document":
-            "📄 أرسل الملف أو PDF الآن.",
-
-        "photo":
-            "🖼️ أرسل الصورة الآن.",
-
-        "video":
-            "🎬 أرسل الفيديو الآن.",
-
-        "audio":
-            "🎧 أرسل الملف الصوتي الآن.",
-
-        "voice":
-            "🎤 أرسل الرسالة الصوتية الآن.",
-
-        "url":
-            "🔗 أرسل الرابط الآن.",
-    }
-
-    await update.message.reply_text(
-        messages.get(
-            content_type,
-            "أرسل المحتوى الآن."
-        ),
+        "📂 أرسل اسم الفرع الجديد:",
         reply_markup=cancel_keyboard(),
     )
 
 
-# ==========================================================
-# حفظ المحتوى
-# ==========================================================
+async def save_branch(update, context):
+    name = update.message.text.strip()
 
-async def save_content(update, context):
-
-    menu_id = context.user_data.get("current_menu_id")
-    content_type = context.user_data.get("content_type")
-    title = context.user_data.get("content_title")
-
-    if not menu_id or not content_type or not title:
-
+    if not name:
         await update.message.reply_text(
-            "⚠️ حدث خطأ في بيانات المحتوى."
+            "❌ اسم الفرع لا يمكن أن يكون فارغًا."
         )
-
         return
 
-    text_content = None
-    file_id = None
-    url = None
+    if is_system_button(name):
+        await update.message.reply_text(
+            "❌ هذا الاسم محجوز لأحد أزرار البوت.\n"
+            "اختر اسمًا آخر."
+        )
+        return
 
-    message = update.message
-
-    if content_type == "text":
-
-        text_content = message.text
-
-    elif content_type == "document":
-
-        if not message.document:
-            await update.message.reply_text(
-                "⚠️ أرسل ملفاً أو PDF."
-            )
-            return
-
-        file_id = message.document.file_id
-
-    elif content_type == "photo":
-
-        if not message.photo:
-            await update.message.reply_text(
-                "⚠️ أرسل صورة."
-            )
-            return
-
-        file_id = message.photo[-1].file_id
-
-    elif content_type == "video":
-
-        if not message.video:
-            await update.message.reply_text(
-                "⚠️ أرسل فيديو."
-            )
-            return
-
-        file_id = message.video.file_id
-
-    elif content_type == "audio":
-
-        if not message.audio:
-            await update.message.reply_text(
-                "⚠️ أرسل ملفاً صوتياً."
-            )
-            return
-
-        file_id = message.audio.file_id
-
-    elif content_type == "voice":
-
-        if not message.voice:
-            await update.message.reply_text(
-                "⚠️ أرسل رسالة صوتية."
-            )
-            return
-
-        file_id = message.voice.file_id
-
-    elif content_type == "url":
-
-        if not message.text:
-
-            await update.message.reply_text(
-                "⚠️ أرسل الرابط كنص."
-            )
-
-            return
-
-        url = message.text.strip()
+    parent_id = context.user_data.get(
+        "branch_parent_id",
+        ROOT_MENU_ID,
+    )
 
     connection = get_connection()
 
-    max_order = connection.execute(
+    order = get_next_menu_order(parent_id)
+
+    if parent_id == ROOT_MENU_ID:
+        db_parent = None
+    else:
+        db_parent = parent_id
+
+    connection.execute(
         """
-        SELECT COALESCE(MAX(display_order), 0)
-        FROM contents
-        WHERE menu_id = ?
+        INSERT INTO menus (
+            name,
+            parent_id,
+            display_order
+        )
+        VALUES (?, ?, ?)
         """,
-        (menu_id,)
-    ).fetchone()[0]
+        (name, db_parent, order),
+    )
+
+    connection.commit()
+    connection.close()
+
+    context.user_data.pop("state", None)
+    context.user_data.pop("branch_parent_id", None)
+
+    await update.message.reply_text(
+        f"✅ تم إنشاء الفرع:\n\n📂 {name}"
+    )
+
+    if context.user_data.get("mode") == "admin":
+        await show_admin_menu(update, context, parent_id)
+    else:
+        await show_root(update, context)
+
+
+# =========================================================
+# إضافة نص
+# =========================================================
+
+async def start_add_text(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+
+    menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    context.user_data["state"] = "waiting_text_title"
+    context.user_data["content_menu_id"] = menu_id
+
+    await update.message.reply_text(
+        "📝 أرسل عنوان النص:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_text_title(update, context):
+    title = update.message.text.strip()
+
+    if not title:
+        await update.message.reply_text(
+            "❌ العنوان لا يمكن أن يكون فارغًا."
+        )
+        return
+
+    if is_system_button(title):
+        await update.message.reply_text(
+            "❌ هذا العنوان محجوز لأحد أزرار البوت.\n"
+            "اختر عنوانًا آخر."
+        )
+        return
+
+    context.user_data["text_title"] = title
+    context.user_data["state"] = "waiting_text_content"
+
+    await update.message.reply_text(
+        "📝 أرسل النص الآن:\n\n"
+        "يمكن أن يكون النص طويلًا.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_text_content(update, context):
+    text_content = update.message.text
+
+    if not text_content:
+        await update.message.reply_text(
+            "❌ لم يتم استلام نص."
+        )
+        return
+
+    menu_id = context.user_data.get(
+        "content_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    title = context.user_data.get(
+        "text_title",
+        "نص",
+    )
+
+    connection = get_connection()
+
+    order = get_next_display_order(
+        "contents",
+        "menu_id",
+        menu_id,
+    )
 
     connection.execute(
         """
@@ -504,653 +661,1221 @@ async def save_content(update, context):
             title,
             content_type,
             text_content,
-            file_id,
-            url,
             display_order
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, 'text', ?, ?)
         """,
         (
             menu_id,
             title,
-            content_type,
             text_content,
-            file_id,
-            url,
-            max_order + 1,
-        )
+            order,
+        ),
     )
 
     connection.commit()
     connection.close()
 
-    menu = get_menu(menu_id)
-
-    context.user_data.clear()
-
-    context.user_data["current_menu_id"] = menu_id
-    context.user_data["current_menu_name"] = menu["name"]
-    context.user_data["mode"] = "admin_menu"
-
-    contents = get_menu_contents(menu_id)
+    context.user_data.pop("state", None)
+    context.user_data.pop("content_menu_id", None)
+    context.user_data.pop("text_title", None)
 
     await update.message.reply_text(
-        f"✅ تم إضافة المحتوى بنجاح.\n\n"
-        f"📂 القائمة: {menu['name']}",
-        reply_markup=admin_menu_keyboard(contents),
+        f"✅ تم حفظ النص:\n\n📝 {title}"
     )
 
-
-# ==========================================================
-# إلغاء العملية
-# ==========================================================
-
-async def cancel_action(update, context):
-
-    menu_id = context.user_data.get("current_menu_id")
-
-    if menu_id:
-
-        menu = get_menu(menu_id)
-
-        if menu:
-
-            contents = get_menu_contents(menu_id)
-
-            context.user_data.clear()
-
-            context.user_data["current_menu_id"] = menu_id
-            context.user_data["current_menu_name"] = menu["name"]
-            context.user_data["mode"] = "admin_menu"
-
-            await update.message.reply_text(
-                f"📂 القائمة: {menu['name']}",
-                reply_markup=admin_menu_keyboard(contents),
-            )
-
-            return
-
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "تم إلغاء العملية.",
-        reply_markup=user_keyboard(
-            is_admin(update.effective_user.id)
-        ),
-    )
+    await show_admin_menu(update, context, menu_id)
 
 
-# ==========================================================
-# الرجوع من قائمة الإدارة
-# ==========================================================
+# =========================================================
+# إضافة رابط
+# =========================================================
 
-async def go_back_admin(update, context):
-
-    context.user_data.clear()
-
-    menus = get_main_menus()
-
-    await update.message.reply_text(
-        "📂 إدارة القوائم الرئيسية:",
-        reply_markup=menus_keyboard(menus),
-    )
-
-
-# ==========================================================
-# فتح القائمة العامة
-# ==========================================================
-
-async def open_public_menu(update, context, menu_name):
-
-    menus = get_main_menus()
-
-    menu = None
-
-    for item in menus:
-
-        if item["name"] == menu_name:
-
-            menu = item
-            break
-
-    if menu is None:
-
-        await update.message.reply_text(
-            "⚠️ لم يتم العثور على القائمة."
-        )
-
+async def start_add_url(update, context):
+    if not is_admin(update.effective_user.id):
         return
 
-    menu_id = menu["id"]
+    menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
+    )
 
-    context.user_data.clear()
-
-    context.user_data["public_menu_id"] = menu_id
-    context.user_data["mode"] = "public_menu"
-
-    contents = get_menu_contents(menu_id)
+    context.user_data["state"] = "waiting_url_title"
+    context.user_data["content_menu_id"] = menu_id
 
     await update.message.reply_text(
-        f"📂 {menu['name']}",
-        reply_markup=public_menu_keyboard(contents),
+        "🔗 أرسل عنوان الرابط:",
+        reply_markup=cancel_keyboard(),
     )
 
 
-# ==========================================================
-# عرض المحتوى للمستخدم
-# ==========================================================
+async def save_url_title(update, context):
+    title = update.message.text.strip()
 
-async def send_public_content(update, menu_id, title):
+    if not title:
+        await update.message.reply_text(
+            "❌ العنوان لا يمكن أن يكون فارغًا."
+        )
+        return
+
+    context.user_data["url_title"] = title
+    context.user_data["state"] = "waiting_url"
+
+    await update.message.reply_text(
+        "🔗 أرسل الرابط الآن:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_url(update, context):
+    url = update.message.text.strip()
+
+    if not url:
+        await update.message.reply_text(
+            "❌ الرابط لا يمكن أن يكون فارغًا."
+        )
+        return
+
+    menu_id = context.user_data.get(
+        "content_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    title = context.user_data.get(
+        "url_title",
+        "رابط",
+    )
 
     connection = get_connection()
 
-    content = connection.execute(
+    order = get_next_display_order(
+        "contents",
+        "menu_id",
+        menu_id,
+    )
+
+    connection.execute(
         """
-        SELECT *
-        FROM contents
-        WHERE menu_id = ?
-        AND title = ?
-        LIMIT 1
+        INSERT INTO contents (
+            menu_id,
+            title,
+            content_type,
+            url,
+            display_order
+        )
+        VALUES (?, ?, 'url', ?, ?)
         """,
         (
             menu_id,
             title,
+            url,
+            order,
+        ),
+    )
+
+    connection.commit()
+    connection.close()
+
+    context.user_data.pop("state", None)
+    context.user_data.pop("content_menu_id", None)
+    context.user_data.pop("url_title", None)
+
+    await update.message.reply_text(
+        f"✅ تم حفظ الرابط:\n\n🔗 {title}"
+    )
+
+    await show_admin_menu(update, context, menu_id)
+
+
+# =========================================================
+# إضافة ملف / PDF
+# =========================================================
+
+async def start_add_document(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+
+    menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    context.user_data["state"] = "waiting_document_title"
+    context.user_data["content_menu_id"] = menu_id
+
+    await update.message.reply_text(
+        "📄 أرسل عنوان الملف:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_document_title(update, context):
+    title = update.message.text.strip()
+
+    if not title:
+        await update.message.reply_text(
+            "❌ العنوان لا يمكن أن يكون فارغًا."
         )
+        return
+
+    context.user_data["document_title"] = title
+    context.user_data["state"] = "waiting_document"
+
+    await update.message.reply_text(
+        "📄 أرسل الملف أو PDF الآن.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_document(update, context):
+    if not update.message.document:
+        await update.message.reply_text(
+            "❌ أرسل ملفًا أو PDF."
+        )
+        return
+
+    document = update.message.document
+
+    menu_id = context.user_data.get(
+        "content_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    title = context.user_data.get(
+        "document_title",
+        document.file_name or "ملف",
+    )
+
+    connection = get_connection()
+
+    order = get_next_display_order(
+        "contents",
+        "menu_id",
+        menu_id,
+    )
+
+    connection.execute(
+        """
+        INSERT INTO contents (
+            menu_id,
+            title,
+            content_type,
+            file_id,
+            display_order
+        )
+        VALUES (?, ?, 'document', ?, ?)
+        """,
+        (
+            menu_id,
+            title,
+            document.file_id,
+            order,
+        ),
+    )
+
+    connection.commit()
+    connection.close()
+
+    context.user_data.pop("state", None)
+    context.user_data.pop("content_menu_id", None)
+    context.user_data.pop("document_title", None)
+
+    await update.message.reply_text(
+        f"✅ تم حفظ الملف:\n\n📄 {title}"
+    )
+
+    await show_admin_menu(update, context, menu_id)
+
+
+# =========================================================
+# مجموعات الصور والفيديوهات والأصوات
+# =========================================================
+
+async def start_media_group(update, context, media_type):
+    if not is_admin(update.effective_user.id):
+        return
+
+    menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    context.user_data["state"] = "waiting_group_title"
+    context.user_data["group_menu_id"] = menu_id
+    context.user_data["new_group_type"] = media_type
+
+    await update.message.reply_text(
+        "✏️ أرسل اسم المجموعة:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_group_title(update, context):
+    title = update.message.text.strip()
+
+    if not title:
+        await update.message.reply_text(
+            "❌ اسم المجموعة لا يمكن أن يكون فارغًا."
+        )
+        return
+
+    if is_system_button(title):
+        await update.message.reply_text(
+            "❌ هذا الاسم محجوز لأحد أزرار البوت.\n"
+            "اختر اسمًا آخر."
+        )
+        return
+
+    context.user_data["group_title"] = title
+    context.user_data["state"] = "waiting_group_description"
+
+    await update.message.reply_text(
+        "📝 أرسل وصف المجموعة.\n\n"
+        "إذا لم ترد وصفًا، أرسل:\n"
+        "بدون شرح",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def create_group(update, context):
+    description = update.message.text.strip()
+
+    if description == "بدون شرح":
+        description = ""
+
+    title = context.user_data.get(
+        "group_title",
+        "مجموعة",
+    )
+
+    media_type = context.user_data.get(
+        "new_group_type"
+    )
+
+    menu_id = context.user_data.get(
+        "group_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    if media_type not in {
+        "photo",
+        "video",
+        "audio",
+    }:
+        await update.message.reply_text(
+            "❌ نوع المجموعة غير صحيح."
+        )
+        return
+
+    connection = get_connection()
+
+    order = get_next_group_order(menu_id)
+
+    cursor = connection.execute(
+        """
+        INSERT INTO media_groups (
+            menu_id,
+            title,
+            description,
+            media_type,
+            sort_order
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            menu_id,
+            title,
+            description,
+            media_type,
+            order,
+        ),
+    )
+
+    group_id = cursor.lastrowid
+
+    connection.commit()
+    connection.close()
+
+    context.user_data["media_group_id"] = group_id
+    context.user_data["creating_media_group"] = True
+    context.user_data["state"] = "receiving_media"
+
+    icon = media_group_icon(media_type)
+
+    await update.message.reply_text(
+        f"{icon} تم إنشاء المجموعة:\n\n"
+        f"{title}\n\n"
+        "الآن أرسل الملفات واحدًا تلو الآخر.\n"
+        "وعندما تنتهي اضغط:\n"
+        "✅ إنهاء",
+        reply_markup=media_group_finish_keyboard(),
+    )
+
+
+# =========================================================
+# استقبال الصور / الفيديو / الصوت
+# =========================================================
+
+async def handle_media(update, context):
+    if not context.user_data.get("creating_media_group"):
+        return
+
+    media_group_id = context.user_data.get(
+        "media_group_id"
+    )
+
+    media_type = context.user_data.get(
+        "new_group_type"
+    )
+
+    file_id = None
+    caption = None
+
+    if media_type == "photo":
+
+        if not update.message.photo:
+            await update.message.reply_text(
+                "❌ هذه المجموعة مخصصة للصور فقط."
+            )
+            return
+
+        file_id = update.message.photo[-1].file_id
+        caption = update.message.caption
+
+    elif media_type == "video":
+
+        if not update.message.video:
+            await update.message.reply_text(
+                "❌ هذه المجموعة مخصصة للفيديوهات فقط."
+            )
+            return
+
+        file_id = update.message.video.file_id
+        caption = update.message.caption
+
+    elif media_type == "audio":
+
+        if not update.message.audio:
+            await update.message.reply_text(
+                "❌ هذه المجموعة مخصصة للأصوات فقط."
+            )
+            return
+
+        file_id = update.message.audio.file_id
+        caption = update.message.caption
+
+    else:
+        return
+
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order
+        FROM media_group_items
+        WHERE group_id = ?
+        """,
+        (media_group_id,),
     ).fetchone()
+
+    order = row["next_order"]
+
+    connection.execute(
+        """
+        INSERT INTO media_group_items (
+            group_id,
+            file_id,
+            caption,
+            sort_order
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            media_group_id,
+            file_id,
+            caption,
+            order,
+        ),
+    )
+
+    connection.commit()
+
+    count = connection.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM media_group_items
+        WHERE group_id = ?
+        """,
+        (media_group_id,),
+    ).fetchone()["n"]
 
     connection.close()
 
-    if not content:
+    await update.message.reply_text(
+        f"✅ تم حفظ العنصر رقم {count}\n\n"
+        "يمكنك إرسال عنصر آخر أو الضغط على:\n"
+        "✅ إنهاء",
+        reply_markup=media_group_finish_keyboard(),
+    )
 
+
+# =========================================================
+# إنهاء مجموعة الوسائط
+# =========================================================
+
+async def finish_media_group(update, context):
+    group_id = context.user_data.get(
+        "media_group_id"
+    )
+
+    menu_id = context.user_data.get(
+        "group_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    if not group_id:
+        await show_admin_menu(update, context, menu_id)
+        return
+
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM media_group_items
+        WHERE group_id = ?
+        """,
+        (group_id,),
+    ).fetchone()
+
+    count = row["n"]
+
+    connection.close()
+
+    if count == 0:
         await update.message.reply_text(
-            "⚠️ لم يتم العثور على المحتوى."
+            "⚠️ لم تضف أي ملف إلى المجموعة.\n"
+            "أرسل ملفًا واحدًا على الأقل أو ألغِ العملية."
+        )
+        return
+
+    context.user_data.pop("creating_media_group", None)
+    context.user_data.pop("media_group_id", None)
+    context.user_data.pop("new_group_type", None)
+    context.user_data.pop("group_title", None)
+    context.user_data.pop("group_menu_id", None)
+    context.user_data.pop("state", None)
+
+    await update.message.reply_text(
+        f"✅ تم إنهاء المجموعة بنجاح.\n"
+        f"عدد العناصر: {count}"
+    )
+
+    await show_admin_menu(update, context, menu_id)
+
+
+# =========================================================
+# إلغاء العملية الحالية
+# =========================================================
+
+async def cancel_action(update, context):
+    group_id = context.user_data.get(
+        "media_group_id"
+    )
+
+    if context.user_data.get("creating_media_group") and group_id:
+
+        connection = get_connection()
+
+        connection.execute(
+            """
+            DELETE FROM media_group_items
+            WHERE group_id = ?
+            """,
+            (group_id,),
         )
 
-        return
+        connection.execute(
+            """
+            DELETE FROM media_groups
+            WHERE id = ?
+            """,
+            (group_id,),
+        )
+
+        connection.commit()
+        connection.close()
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ تم إلغاء العملية."
+    )
+
+    if is_admin(update.effective_user.id):
+        await show_admin_panel(update, context)
+    else:
+        await show_root(update, context)
+
+
+# =========================================================
+# إرسال محتوى فردي
+# =========================================================
+
+async def send_single_content(update, content):
+    message = update.message
 
     content_type = content["content_type"]
 
     if content_type == "text":
 
-        await update.message.reply_text(
-            content["text_content"] or ""
+        await send_long_text(
+            message,
+            content["text_content"] or "",
         )
 
     elif content_type == "document":
 
-        await update.message.reply_document(
-            content["file_id"],
-            caption=content["title"],
+        await message.reply_document(
+            document=content["file_id"]
         )
 
     elif content_type == "photo":
 
-        await update.message.reply_photo(
-            content["file_id"],
-            caption=content["title"],
+        await message.reply_photo(
+            photo=content["file_id"]
         )
 
     elif content_type == "video":
 
-        await update.message.reply_video(
-            content["file_id"],
-            caption=content["title"],
+        await message.reply_video(
+            video=content["file_id"]
         )
 
     elif content_type == "audio":
 
-        await update.message.reply_audio(
-            content["file_id"],
-            caption=content["title"],
+        await message.reply_audio(
+            audio=content["file_id"]
         )
 
     elif content_type == "voice":
 
-        await update.message.reply_voice(
-            content["file_id"]
+        await message.reply_voice(
+            voice=content["file_id"]
         )
 
     elif content_type == "url":
 
-        await update.message.reply_text(
-            f"🔗 {content['url']}"
+        await message.reply_text(
+            content["url"] or ""
+        )
+
+    else:
+
+        await message.reply_text(
+            "❌ نوع المحتوى غير مدعوم."
         )
 
 
-# ==========================================================
-# الرجوع من القائمة العامة
-# ==========================================================
+# =========================================================
+# إرسال مجموعة وسائط
+# =========================================================
 
-async def go_back_public(update, context):
+async def send_media_group(update, group):
+    message = update.message
 
-    context.user_data.clear()
+    connection = get_connection()
 
-    await update.message.reply_text(
-        "🌿 القائمة الرئيسية:",
-        reply_markup=user_keyboard(
-            is_admin(update.effective_user.id)
-        ),
+    items = connection.execute(
+        """
+        SELECT *
+        FROM media_group_items
+        WHERE group_id = ?
+        ORDER BY sort_order, id
+        """,
+        (group["id"],),
+    ).fetchall()
+
+    connection.close()
+
+    if not items:
+        await message.reply_text(
+            "❌ هذه المجموعة لا تحتوي على ملفات."
+        )
+        return
+
+    description = group["description"] or ""
+
+    if description:
+        await message.reply_text(
+            f"📂 {group['title']}\n\n"
+            f"{description}"
+        )
+
+    media_type = group["media_type"]
+
+    for item in items:
+
+        caption = item["caption"]
+
+        if media_type == "photo":
+
+            await message.reply_photo(
+                photo=item["file_id"],
+                caption=caption,
+            )
+
+        elif media_type == "video":
+
+            await message.reply_video(
+                video=item["file_id"],
+                caption=caption,
+            )
+
+        elif media_type == "audio":
+
+            await message.reply_audio(
+                audio=item["file_id"],
+                caption=caption,
+            )
+
+
+# =========================================================
+# فتح فرع
+# =========================================================
+
+def find_child_by_button(menu_id, text):
+    if not text.startswith("📂 "):
+        return None
+
+    name = text.removeprefix("📂 ").strip()
+
+    children = get_children(menu_id)
+
+    for child in children:
+        if child["name"] == name:
+            return child
+
+    return None
+
+
+def find_content_by_button(menu_id, text):
+    contents = get_contents(menu_id)
+
+    for content in contents:
+
+        icon = content_type_icon(
+            content["content_type"]
+        )
+
+        button_text = f"{icon} {content['title']}"
+
+        if button_text == text:
+            return content
+
+    return None
+
+
+def find_group_by_button(menu_id, text):
+    groups = get_media_groups(menu_id)
+
+    for group in groups:
+
+        icon = media_group_icon(
+            group["media_type"]
+        )
+
+        button_text = f"{icon} {group['title']}"
+
+        if button_text == text:
+            return group
+
+    return None
+
+
+# =========================================================
+# الرجوع درجة واحدة
+# =========================================================
+
+async def go_back(update, context):
+    mode = context.user_data.get("mode")
+
+    current_menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
     )
 
+    if mode == "admin":
 
-# ==========================================================
-# الإحصائيات
-# ==========================================================
+        if current_menu_id == ROOT_MENU_ID:
+            await show_menu_management(update, context)
+            return
 
-async def show_statistics(update, context):
+        menu = get_menu(current_menu_id)
 
-    users, menus, contents, admins = get_stats()
+        if not menu:
+            await show_menu_management(update, context)
+            return
 
-    await update.message.reply_text(
-        "📊 الإحصائيات\n\n"
-        f"👥 المستخدمون: {users}\n"
-        f"📂 القوائم الرئيسية: {menus}\n"
-        f"📄 المحتويات: {contents}\n"
-        f"⚙️ المشرفون: {admins}"
-    )
+        parent_id = menu["parent_id"]
 
-
-# ==========================================================
-# واجهة المستخدم
-# ==========================================================
-
-async def show_user_interface(update, context):
-
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "👤 واجهة المستخدم",
-        reply_markup=user_keyboard(
-            is_admin(update.effective_user.id)
-        ),
-    )
-
-
-# ==========================================================
-# معالجة الرسائل
-# ==========================================================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not update.message or not update.message.text:
-
-        # السماح بحفظ الملفات والوسائط أثناء إدخال المحتوى
-        state = context.user_data.get("state")
-
-        if state == "waiting_content":
-
-            if is_admin(update.effective_user.id):
-
-                await save_content(
-                    update,
-                    context
-                )
+        if parent_id is None:
+            await show_admin_menu(
+                update,
+                context,
+                ROOT_MENU_ID,
+            )
+        else:
+            await show_admin_menu(
+                update,
+                context,
+                parent_id,
+            )
 
         return
 
+    if mode == "public":
+
+        if current_menu_id == ROOT_MENU_ID:
+            await show_root(update, context)
+            return
+
+        menu = get_menu(current_menu_id)
+
+        if not menu:
+            await show_root(update, context)
+            return
+
+        parent_id = menu["parent_id"]
+
+        if parent_id is None:
+            await show_root(update, context)
+        else:
+            await show_public_menu(
+                update,
+                context,
+                parent_id,
+            )
+
+        return
+
+    await show_root(update, context)
+
+
+# =========================================================
+# التعامل مع الأزرار والرسائل النصية
+# =========================================================
+
+async def handle_text(update, context):
     text = update.message.text.strip()
+
+    if not text:
+        return
 
     user_id = update.effective_user.id
 
-    admin_user = is_admin(user_id)
-
-    state = context.user_data.get("state")
-    mode = context.user_data.get("mode")
-
-    # ======================================================
-    # الإلغاء
-    # ======================================================
+    # -----------------------------------------------------
+    # الأزرار العامة أولاً
+    # -----------------------------------------------------
 
     if text == "❌ إلغاء":
-
-        await cancel_action(
-            update,
-            context
-        )
-
+        await cancel_action(update, context)
         return
-
-    # ======================================================
-    # الرجوع
-    # ======================================================
 
     if text == "◀️ رجوع":
+        await go_back(update, context)
+        return
 
-        if state in [
-            "create_main_menu",
-            "select_content_type",
-            "enter_content_title",
-            "waiting_content",
-        ]:
+    # -----------------------------------------------------
+    # إنهاء مجموعة الوسائط
+    # -----------------------------------------------------
 
-            if context.user_data.get("current_menu_id"):
+    if text == "✅ إنهاء":
 
-                menu_id = context.user_data["current_menu_id"]
-
-                menu = get_menu(menu_id)
-
-                if menu:
-
-                    contents = get_menu_contents(menu_id)
-
-                    context.user_data.clear()
-
-                    context.user_data["current_menu_id"] = menu_id
-                    context.user_data["current_menu_name"] = menu["name"]
-                    context.user_data["mode"] = "admin_menu"
-
-                    await update.message.reply_text(
-                        f"📂 القائمة: {menu['name']}",
-                        reply_markup=admin_menu_keyboard(contents),
-                    )
-
-                    return
-
-            await show_admin_panel(
-                update,
-                context
-            )
-
-            return
-
-        if mode == "admin_menu":
-
-            await go_back_admin(
-                update,
-                context
-            )
-
-            return
-
-        if mode == "public_menu":
-
-            await go_back_public(
-                update,
-                context
-            )
-
-            return
-
-        await start(
-            update,
-            context
-        )
+        if context.user_data.get("creating_media_group"):
+            await finish_media_group(update, context)
 
         return
 
-    # ======================================================
-    # حالات إدخال البيانات
-    # ======================================================
-
-    if admin_user and state == "create_main_menu":
-
-        await save_main_menu(
-            update,
-            context
-        )
-
-        return
-
-    if admin_user and state == "select_content_type":
-
-        await choose_content_type(
-            update,
-            context
-        )
-
-        return
-
-    if admin_user and state == "enter_content_title":
-
-        await save_content_title(
-            update,
-            context
-        )
-
-        return
-
-    if admin_user and state == "waiting_content":
-
-        await save_content(
-            update,
-            context
-        )
-
-        return
-
-    # ======================================================
-    # القائمة الرئيسية للمستخدم
-    # ======================================================
-
-    if text in [
-        "📖 القرآن والثقافة",
-        "📚 الملازم",
-        "🎧 المحاضرات",
-        "ℹ️ عن البوت",
-    ]:
-
-        await open_public_menu(
-            update,
-            context,
-            text[2:].strip()
-        )
-
-        return
-
-    # ======================================================
-    # زر الإدارة
-    # ======================================================
+    # -----------------------------------------------------
+    # الإدارة
+    # -----------------------------------------------------
 
     if text == "⚙️ الإدارة":
 
-        if not admin_user:
-
-            await update.message.reply_text(
-                "⚠️ هذا القسم مخصص للمشرفين فقط."
-            )
-
-            return
-
-        await show_admin_panel(
-            update,
-            context
-        )
+        if is_admin(user_id):
+            await show_admin_panel(update, context)
 
         return
-
-    # ======================================================
-    # إدارة القوائم
-    # ======================================================
 
     if text == "📂 إدارة القوائم":
 
-        if not admin_user:
-
-            return
-
-        await show_menus(
-            update,
-            context
-        )
+        if is_admin(user_id):
+            await show_menu_management(update, context)
 
         return
-
-    # ======================================================
-    # إنشاء قائمة رئيسية
-    # ======================================================
-
-    if text == "➕ إنشاء قائمة رئيسية":
-
-        if not admin_user:
-
-            return
-
-        await create_main_menu_start(
-            update,
-            context
-        )
-
-        return
-
-    # ======================================================
-    # فتح قائمة رئيسية للمشرف
-    # ======================================================
-
-    if admin_user and text.startswith("📂 "):
-
-        menu_name = text.removeprefix(
-            "📂 "
-        ).strip()
-
-        await open_admin_menu(
-            update,
-            context,
-            menu_name
-        )
-
-        return
-
-    # ======================================================
-    # إضافة محتوى داخل القائمة الحالية
-    # ======================================================
-
-    if text == "➕ إضافة محتوى":
-
-        if not admin_user:
-
-            return
-
-        await start_add_content(
-            update,
-            context
-        )
-
-        return
-
-    # ======================================================
-    # الإحصائيات
-    # ======================================================
-
-    if text == "📊 الإحصائيات":
-
-        if not admin_user:
-
-            return
-
-        await show_statistics(
-            update,
-            context
-        )
-
-        return
-
-    # ======================================================
-    # واجهة المستخدم
-    # ======================================================
 
     if text == "👤 واجهة المستخدم":
 
-        if not admin_user:
+        await show_root(update, context)
+        return
 
+    if text == "📊 الإحصائيات":
+
+        if not is_admin(user_id):
             return
 
-        await show_user_interface(
-            update,
-            context
+        stats = get_stats()
+
+        users = stats[0]
+        menus = stats[1]
+        contents = stats[2]
+        admins = stats[3]
+        media_groups = stats[4]
+        media_items = stats[5]
+
+        await update.message.reply_text(
+            "📊 إحصائيات البوت\n\n"
+            f"👥 المستخدمون: {users}\n"
+            f"📂 القوائم: {menus}\n"
+            f"📝 المحتويات: {contents}\n"
+            f"🎞️ مجموعات الوسائط: {media_groups}\n"
+            f"📦 عناصر الوسائط: {media_items}\n"
+            f"👤 المشرفون: {admins}"
         )
 
         return
 
-    # ======================================================
-    # محتوى داخل القائمة العامة
-    # ======================================================
+    if text == "👥 المشرفون":
 
-    public_menu_id = context.user_data.get(
-        "public_menu_id"
-    )
+        if not is_admin(user_id):
+            return
 
-    if public_menu_id and mode == "public_menu":
-
-        contents = get_menu_contents(
-            public_menu_id
+        await update.message.reply_text(
+            "👥 إدارة المشرفين ستكون في المرحلة التالية."
         )
+        return
 
-        for content in contents:
+    # -----------------------------------------------------
+    # إنشاء قائمة رئيسية
+    # -----------------------------------------------------
 
-            icon = {
-                "text": "📝",
-                "document": "📄",
-                "photo": "🖼️",
-                "video": "🎬",
-                "audio": "🎧",
-                "voice": "🎤",
-                "url": "🔗",
-            }.get(
-                content["content_type"],
-                "📄"
+    if text == "➕ إنشاء قائمة رئيسية":
+
+        if is_admin(user_id):
+            await start_create_main_menu(
+                update,
+                context,
             )
 
-            if text == f"{icon} {content['title']}":
+        return
 
-                await send_public_content(
+    # -----------------------------------------------------
+    # أدوات الإدارة داخل القائمة
+    # -----------------------------------------------------
+
+    if text == "➕ إضافة فرع":
+
+        if is_admin(user_id):
+            await start_create_branch(
+                update,
+                context,
+            )
+
+        return
+
+    if text == "📝 إضافة نص":
+
+        if is_admin(user_id):
+            await start_add_text(
+                update,
+                context,
+            )
+
+        return
+
+    if text == "📄 إضافة ملف":
+
+        if is_admin(user_id):
+            await start_add_document(
+                update,
+                context,
+            )
+
+        return
+
+    if text == "🔗 إضافة رابط":
+
+        if is_admin(user_id):
+            await start_add_url(
+                update,
+                context,
+            )
+
+        return
+
+    if text == "🖼️ إضافة صور متعددة":
+
+        if is_admin(user_id):
+            await start_media_group(
+                update,
+                context,
+                "photo",
+            )
+
+        return
+
+    if text == "🎬 إضافة فيديوهات متعددة":
+
+        if is_admin(user_id):
+            await start_media_group(
+                update,
+                context,
+                "video",
+            )
+
+        return
+
+    if text == "🎵 إضافة أصوات متعددة":
+
+        if is_admin(user_id):
+            await start_media_group(
+                update,
+                context,
+                "audio",
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # حالات الإدخال
+    # -----------------------------------------------------
+
+    state = context.user_data.get("state")
+
+    if state == "waiting_main_menu_name":
+
+        await save_main_menu(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_branch_name":
+
+        await save_branch(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_text_title":
+
+        await save_text_title(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_text_content":
+
+        await save_text_content(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_url_title":
+
+        await save_url_title(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_url":
+
+        await save_url(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_document_title":
+
+        await save_document_title(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_group_title":
+
+        await save_group_title(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_group_description":
+
+        await create_group(
+            update,
+            context,
+        )
+        return
+
+    if state == "waiting_document":
+
+        await update.message.reply_text(
+            "📄 أنت الآن في انتظار ملف أو PDF."
+        )
+        return
+
+    if state == "receiving_media":
+
+        await update.message.reply_text(
+            "📦 أنت الآن تضيف ملفات إلى مجموعة الوسائط.\n"
+            "أرسل الملف المناسب أو اضغط ✅ إنهاء."
+        )
+        return
+
+    # -----------------------------------------------------
+    # القائمة الحالية
+    # -----------------------------------------------------
+
+    mode = context.user_data.get("mode")
+
+    current_menu_id = context.user_data.get(
+        "current_menu_id",
+        ROOT_MENU_ID,
+    )
+
+    # -----------------------------------------------------
+    # فتح فرع
+    # -----------------------------------------------------
+
+    child = find_child_by_button(
+        current_menu_id,
+        text,
+    )
+
+    if child:
+
+        if mode == "admin":
+
+            await show_admin_menu(
+                update,
+                context,
+                child["id"],
+            )
+
+        else:
+
+            await show_public_menu(
+                update,
+                context,
+                child["id"],
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # فتح محتوى فردي
+    # -----------------------------------------------------
+
+    content = find_content_by_button(
+        current_menu_id,
+        text,
+    )
+
+    if content:
+
+        await send_single_content(
+            update,
+            content,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # فتح مجموعة وسائط
+    # -----------------------------------------------------
+
+    group = find_group_by_button(
+        current_menu_id,
+        text,
+    )
+
+    if group:
+
+        await send_media_group(
+            update,
+            group,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # أزرار القائمة الرئيسية القديمة
+    # -----------------------------------------------------
+
+    # دعم الأزرار القديمة إذا كانت موجودة عند المستخدم.
+    old_main_names = {
+        "📖 القرآن والثقافة": "القرآن والثقافة",
+        "📚 الملازم": "الملازم",
+        "🎧 المحاضرات": "المحاضرات",
+        "ℹ️ عن البوت": "عن البوت",
+    }
+
+    if text in old_main_names:
+
+        target_name = old_main_names[text]
+
+        children = get_children(ROOT_MENU_ID)
+
+        for menu in children:
+
+            if menu["name"] == target_name:
+
+                await show_public_menu(
                     update,
-                    public_menu_id,
-                    content["title"]
+                    context,
+                    menu["id"],
                 )
 
                 return
 
-    # ======================================================
-    # المستخدم العادي يضغط قائمة 📂
-    # ======================================================
-
-    if text.startswith("📂 ") and not admin_user:
-
-        menu_name = text.removeprefix(
-            "📂 "
-        ).strip()
-
-        await open_public_menu(
-            update,
-            context,
-            menu_name
-        )
-
-        return
-
-    # ======================================================
-    # رسالة غير معروفة
-    # ======================================================
+    # -----------------------------------------------------
+    # أي نص غير معروف
+    # -----------------------------------------------------
 
     await update.message.reply_text(
-        "⚠️ لم أفهم الأمر.\n"
-        "اختر أحد الأزرار الموجودة أمامك."
+        "❓ لم أفهم هذا الخيار.\n"
+        "اختر أحد الأزرار الظاهرة أمامك."
     )
 
 
-# ==========================================================
-# التشغيل
-# ==========================================================
+# =========================================================
+# التطبيق الرئيسي
+# =========================================================
 
 def main():
 
     if not BOT_TOKEN:
-
         raise RuntimeError(
-            "BOT_TOKEN غير موجود في GitHub Secrets."
-        )
-
-    if not ADMIN_ID:
-
-        raise RuntimeError(
-            "ADMIN_ID غير موجود في GitHub Secrets."
+            "BOT_TOKEN غير موجود في متغيرات البيئة."
         )
 
     initialize_database()
 
-    ensure_admin(
-        int(ADMIN_ID)
-    )
+    if ADMIN_ID:
+        try:
+            ensure_admin(int(ADMIN_ID))
+        except ValueError:
+            raise RuntimeError(
+                "ADMIN_ID يجب أن يكون رقم Telegram User ID صحيح."
+            )
 
     application = (
         Application.builder()
@@ -1159,26 +1884,55 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start
+        CommandHandler("start", start)
+    )
+
+    # الرسائل النصية
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text,
         )
     )
 
+    # الصور
     application.add_handler(
         MessageHandler(
-            filters.ALL,
-            handle_message
+            filters.PHOTO,
+            handle_media,
+        )
+    )
+
+    # الفيديوهات
+    application.add_handler(
+        MessageHandler(
+            filters.VIDEO,
+            handle_media,
+        )
+    )
+
+    # الأصوات
+    application.add_handler(
+        MessageHandler(
+            filters.AUDIO,
+            handle_media,
+        )
+    )
+
+    # الملفات
+    application.add_handler(
+        MessageHandler(
+            filters.Document.ALL,
+            save_document,
         )
     )
 
     print("Huda People Bot is running...")
 
     application.run_polling(
-        drop_pending_updates=True
+        allowed_updates=Update.ALL_TYPES
     )
 
 
 if __name__ == "__main__":
-
     main()
